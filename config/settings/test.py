@@ -6,6 +6,9 @@ os.environ.setdefault(
 os.environ.setdefault(
     "DATABASE_URL", "postgres://authenticheck:authenticheck@localhost:5432/authenticheck"
 )
+os.environ.setdefault(
+    "JWT_SIGNING_KEY", "test-only-jwt-signing-key-at-least-32-bytes!!"
+)
 
 from .base import *  # noqa: E402
 

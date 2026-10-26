@@ -25,7 +25,9 @@ class HasActiveTenantMembership(BasePermission):
             return False
 
         membership = (
-            Membership.objects.filter(user=request.user, tenant_id=tenant_id, is_active=True)
+            Membership.objects.filter(
+                user=request.user, tenant_id=tenant_id, status=Membership.Status.ACTIVE
+            )
             .select_related("tenant")
             .first()
         )

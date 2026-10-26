@@ -3,6 +3,8 @@ import logging
 from django.core.cache import cache
 from django.db import connection, transaction
 from django.utils.decorators import method_decorator
+from drf_spectacular.utils import extend_schema, inline_serializer
+from rest_framework import serializers as s
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -16,6 +18,11 @@ class _HealthView(APIView):
     throttle_classes: list = []
 
 
+@extend_schema(
+    responses={200: inline_serializer("LiveResponse", fields={"status": s.CharField()})},
+    tags=["Health"],
+    summary="Liveness probe",
+)
 @method_decorator(transaction.non_atomic_requests, name="dispatch")
 class LiveView(_HealthView):
     """Liveness: the process is up. Does not touch dependencies."""
@@ -24,6 +31,19 @@ class LiveView(_HealthView):
         return Response({"status": "ok"})
 
 
+@extend_schema(
+    responses={
+        200: inline_serializer(
+            "ReadyResponse",
+            fields={
+                "status": s.CharField(),
+                "checks": s.DictField(child=s.CharField()),
+            },
+        )
+    },
+    tags=["Health"],
+    summary="Readiness probe",
+)
 @method_decorator(transaction.non_atomic_requests, name="dispatch")
 class ReadyView(_HealthView):
     """Readiness: dependencies are reachable. Used by orchestrators / load balancers."""

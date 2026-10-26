@@ -27,7 +27,7 @@ class Tenant(BaseModel):
 
 class Membership(BaseModel):
     """A user's role within a tenant. One person can belong to many tenants (EC-039/EC-040).
-    The active tenant is set per-request via X-Tenant-ID, validated against this table."""
+    The active tenant is set per-request via the token tid claim, validated against this table."""
 
     class Role(models.TextChoices):
         OWNER = "owner", "Owner"
@@ -35,12 +35,18 @@ class Membership(BaseModel):
         MEMBER = "member", "Member"
         VIEWER = "viewer", "Viewer"
 
+    class Status(models.TextChoices):
+        ACTIVE = "active", "Active"
+        REVOKED = "revoked", "Revoked"
+
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="memberships"
     )
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="memberships")
     role = models.CharField(max_length=20, choices=Role.choices)
-    is_active = models.BooleanField(default=True, db_index=True)
+    status = models.CharField(
+        max_length=10, choices=Status.choices, default=Status.ACTIVE, db_index=True
+    )
     invited_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
@@ -49,6 +55,14 @@ class Membership(BaseModel):
         related_name="+",
     )
     joined_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
 
     class Meta:
         constraints = [

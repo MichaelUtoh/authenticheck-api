@@ -40,7 +40,7 @@ class MembershipSerializer(serializers.ModelSerializer):
             "tenant_legal_name",
             "tenant_status",
             "role",
-            "is_active",
+            "status",
             "joined_at",
         ]
         read_only_fields = fields

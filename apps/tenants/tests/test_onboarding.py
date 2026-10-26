@@ -55,7 +55,7 @@ def test_register_creates_tenant_and_owner_membership(user):
 def test_register_requires_auth():
     client = APIClient()
     response = client.post("/api/v1/tenants/register", {"legal_name": "Acme"})
-    assert response.status_code == 403
+    assert response.status_code == 401
 
 
 # --- Staff status transitions ---

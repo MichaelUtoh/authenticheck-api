@@ -1,5 +1,14 @@
 import pytest
+from django.core.cache import cache
 from django.db import connection
+
+
+@pytest.fixture(autouse=True)
+def clear_cache():
+    """Prevent locmem cache from leaking auth state between tests."""
+    cache.clear()
+    yield
+    cache.clear()
 
 
 @pytest.fixture(scope="session")

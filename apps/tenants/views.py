@@ -1,6 +1,7 @@
 import logging
 
 from django.utils import timezone
+from drf_spectacular.utils import extend_schema, extend_schema_view
 from rest_framework import status
 from rest_framework.exceptions import NotFound, PermissionDenied
 from rest_framework.permissions import IsAdminUser, IsAuthenticated
@@ -39,6 +40,13 @@ _ALLOWED_TRANSITIONS = {
 }
 
 
+@extend_schema(
+    request=TenantRegisterSerializer,
+    responses={201: TenantSerializer},
+    tags=["Tenants"],
+    summary="Register a new manufacturer tenant",
+    description="Creates the tenant in `pending` status and makes the requesting user its owner.",
+)
 class TenantRegisterView(APIView):
     """Create a new tenant and make the requesting user its OWNER."""
 
@@ -64,6 +72,11 @@ class TenantRegisterView(APIView):
         return Response(TenantSerializer(tenant).data, status=status.HTTP_201_CREATED)
 
 
+@extend_schema(
+    responses={200: TenantSerializer},
+    tags=["Tenants"],
+    summary="Retrieve the active tenant's details",
+)
 class TenantDetailView(APIView):
     """Retrieve a tenant. Requires active membership and approved tenant."""
 
@@ -73,6 +86,11 @@ class TenantDetailView(APIView):
         return Response(TenantSerializer(request.active_membership.tenant).data)
 
 
+@extend_schema(
+    request=TenantStatusUpdateSerializer,
+    responses={200: TenantSerializer},
+    tags=["Tenants — Staff"],
+)
 class _TenantStatusTransitionView(APIView):
     """Base for staff-only status transitions."""
 
@@ -112,22 +130,31 @@ class _TenantStatusTransitionView(APIView):
         return Response(TenantSerializer(tenant).data)
 
 
+@extend_schema(summary="Approve a pending or info-requested tenant")
 class TenantApproveView(_TenantStatusTransitionView):
     _action = "approve"
 
 
+@extend_schema(summary="Reject a pending or info-requested tenant")
 class TenantRejectView(_TenantStatusTransitionView):
     _action = "reject"
 
 
+@extend_schema(summary="Request further information from a pending tenant")
 class TenantRequestInfoView(_TenantStatusTransitionView):
     _action = "request_info"
 
 
+@extend_schema(summary="Suspend an approved tenant")
 class TenantSuspendView(_TenantStatusTransitionView):
     _action = "suspend"
 
 
+@extend_schema(
+    responses={200: MembershipSerializer(many=True)},
+    tags=["Tenants"],
+    summary="List active members of the current tenant",
+)
 class TenantMembersView(APIView):
     """List members of a tenant. Requires owner or admin role."""
 
@@ -135,6 +162,6 @@ class TenantMembersView(APIView):
 
     def get(self, request):
         members = Membership.objects.filter(
-            tenant_id=request.active_tenant_id, is_active=True
+            tenant_id=request.active_tenant_id, status=Membership.Status.ACTIVE
         ).select_related("user", "tenant")
         return Response(MembershipSerializer(members, many=True).data)

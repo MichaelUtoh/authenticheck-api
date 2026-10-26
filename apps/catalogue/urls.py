@@ -3,6 +3,7 @@ from django.urls import path
 from .views import (
     BatchDetailView,
     BatchListCreateView,
+    BatchRecallView,
     BrandDetailView,
     BrandListCreateView,
     BulkImportJobDetailView,
@@ -31,6 +32,11 @@ urlpatterns = [
         "catalogue/products/<uuid:product_pk>/batches/<uuid:pk>",
         BatchDetailView.as_view(),
         name="batch-detail",
+    ),
+    path(
+        "catalogue/products/<uuid:product_pk>/batches/<uuid:pk>/recall",
+        BatchRecallView.as_view(),
+        name="batch-recall",
     ),
     path("catalogue/import", BulkImportView.as_view(), name="bulk-import"),
     path("catalogue/import/<uuid:pk>", BulkImportJobDetailView.as_view(), name="bulk-import-detail"),

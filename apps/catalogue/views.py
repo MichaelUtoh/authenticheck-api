@@ -3,9 +3,13 @@ import io
 import logging
 
 from django.db import IntegrityError
+from django.utils import timezone
 from django.utils.text import slugify
+from drf_spectacular.utils import extend_schema, extend_schema_view, inline_serializer, OpenApiParameter
+from drf_spectacular.types import OpenApiTypes
+from rest_framework import serializers as s
 from rest_framework import status
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.parsers import MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -13,6 +17,7 @@ from rest_framework.views import APIView
 
 from apps.audit import services as audit
 from apps.core.tenancy import tenant_context
+from apps.issuance.models import Code
 from apps.tenants.permissions import HasActiveTenantMembership, IsOwnerOrAdmin
 
 from .models import Batch, Brand, BulkImportJob, Product, RegulatoryRef
@@ -39,6 +44,19 @@ _WRITE_PERMS = [IsAuthenticated, HasActiveTenantMembership, IsOwnerOrAdmin]
 # Brands
 # ---------------------------------------------------------------------------
 
+@extend_schema_view(
+    get=extend_schema(
+        responses={200: BrandSerializer(many=True)},
+        tags=["Catalogue — Brands"],
+        summary="List active brands for the tenant",
+    ),
+    post=extend_schema(
+        request=BrandWriteSerializer,
+        responses={201: BrandSerializer},
+        tags=["Catalogue — Brands"],
+        summary="Create a brand",
+    ),
+)
 class BrandListCreateView(APIView):
     permission_classes = _BASE_PERMS
 
@@ -71,6 +89,24 @@ class BrandListCreateView(APIView):
             raise PermissionDenied(perm.message)
 
 
+@extend_schema_view(
+    get=extend_schema(
+        responses={200: BrandSerializer},
+        tags=["Catalogue — Brands"],
+        summary="Retrieve a brand",
+    ),
+    patch=extend_schema(
+        request=BrandWriteSerializer,
+        responses={200: BrandSerializer},
+        tags=["Catalogue — Brands"],
+        summary="Partially update a brand",
+    ),
+    delete=extend_schema(
+        responses={204: None},
+        tags=["Catalogue — Brands"],
+        summary="Soft-deactivate a brand",
+    ),
+)
 class BrandDetailView(APIView):
     permission_classes = _BASE_PERMS
 
@@ -122,6 +158,19 @@ class BrandDetailView(APIView):
 # Products
 # ---------------------------------------------------------------------------
 
+@extend_schema_view(
+    get=extend_schema(
+        responses={200: ProductSerializer(many=True)},
+        tags=["Catalogue — Products"],
+        summary="List all products for the tenant",
+    ),
+    post=extend_schema(
+        request=ProductWriteSerializer,
+        responses={201: ProductSerializer},
+        tags=["Catalogue — Products"],
+        summary="Create a product",
+    ),
+)
 class ProductListCreateView(APIView):
     permission_classes = _BASE_PERMS
 
@@ -156,6 +205,19 @@ class ProductListCreateView(APIView):
         return Response(ProductSerializer(product).data, status=status.HTTP_201_CREATED)
 
 
+@extend_schema_view(
+    get=extend_schema(
+        responses={200: ProductSerializer},
+        tags=["Catalogue — Products"],
+        summary="Retrieve a product",
+    ),
+    patch=extend_schema(
+        request=ProductWriteSerializer,
+        responses={200: ProductSerializer},
+        tags=["Catalogue — Products"],
+        summary="Partially update a product",
+    ),
+)
 class ProductDetailView(APIView):
     permission_classes = _BASE_PERMS
 
@@ -191,6 +253,19 @@ class ProductDetailView(APIView):
 # Regulatory refs
 # ---------------------------------------------------------------------------
 
+@extend_schema_view(
+    get=extend_schema(
+        responses={200: RegulatoryRefSerializer(many=True)},
+        tags=["Catalogue — Regulatory Refs"],
+        summary="List regulatory references for a product",
+    ),
+    post=extend_schema(
+        request=RegulatoryRefWriteSerializer,
+        responses={201: RegulatoryRefSerializer},
+        tags=["Catalogue — Regulatory Refs"],
+        summary="Create a regulatory reference",
+    ),
+)
 class RegulatoryRefListCreateView(APIView):
     permission_classes = _BASE_PERMS
 
@@ -226,6 +301,19 @@ class RegulatoryRefListCreateView(APIView):
 # Batches
 # ---------------------------------------------------------------------------
 
+@extend_schema_view(
+    get=extend_schema(
+        responses={200: BatchSerializer(many=True)},
+        tags=["Catalogue — Batches"],
+        summary="List batches for a product",
+    ),
+    post=extend_schema(
+        request=BatchWriteSerializer,
+        responses={201: BatchSerializer},
+        tags=["Catalogue — Batches"],
+        summary="Create a production batch",
+    ),
+)
 class BatchListCreateView(APIView):
     permission_classes = _BASE_PERMS
 
@@ -257,6 +345,19 @@ class BatchListCreateView(APIView):
         return Response(BatchSerializer(batch).data, status=status.HTTP_201_CREATED)
 
 
+@extend_schema_view(
+    get=extend_schema(
+        responses={200: BatchSerializer},
+        tags=["Catalogue — Batches"],
+        summary="Retrieve a batch",
+    ),
+    patch=extend_schema(
+        request=BatchWriteSerializer,
+        responses={200: BatchSerializer},
+        tags=["Catalogue — Batches"],
+        summary="Partially update a batch",
+    ),
+)
 class BatchDetailView(APIView):
     permission_classes = _BASE_PERMS
 
@@ -289,6 +390,18 @@ class BatchDetailView(APIView):
 # Bulk import
 # ---------------------------------------------------------------------------
 
+@extend_schema(
+    request=inline_serializer(
+        "BulkImportRequest",
+        fields={
+            "import_type": s.ChoiceField(choices=BulkImportJob.ImportType.choices),
+            "file": s.FileField(),
+        },
+    ),
+    responses={202: BulkImportJobSerializer},
+    tags=["Catalogue — Import"],
+    summary="Upload a CSV to asynchronously import brands, products, or batches",
+)
 class BulkImportView(APIView):
     permission_classes = _WRITE_PERMS
     parser_classes = [MultiPartParser]
@@ -326,6 +439,11 @@ class BulkImportView(APIView):
         return Response(BulkImportJobSerializer(job).data, status=status.HTTP_202_ACCEPTED)
 
 
+@extend_schema(
+    responses={200: BulkImportJobSerializer},
+    tags=["Catalogue — Import"],
+    summary="Poll the status of a bulk import job",
+)
 class BulkImportJobDetailView(APIView):
     permission_classes = _BASE_PERMS
 
@@ -338,13 +456,70 @@ class BulkImportJobDetailView(APIView):
 
 
 # ---------------------------------------------------------------------------
+# Batch recall
+# ---------------------------------------------------------------------------
+
+
+@extend_schema(
+    request=inline_serializer("BatchRecallRequest", fields={"reason": s.CharField(required=False)}),
+    responses={
+        200: inline_serializer(
+            "BatchRecallResponse",
+            fields={"batch": BatchSerializer(), "codes_deactivated": s.IntegerField()},
+        )
+    },
+    tags=["Catalogue — Batches"],
+    summary="Recall a batch and deactivate all its active codes",
+    description=(
+        "Sets the batch status to `recalled` and bulk-deactivates every active code "
+        "that belongs to it. Idempotent on code deactivation; raises 400 if the batch "
+        "is already recalled."
+    ),
+)
+class BatchRecallView(APIView):
+    permission_classes = [IsAuthenticated, HasActiveTenantMembership, IsOwnerOrAdmin]
+
+    def post(self, request, product_pk, pk):
+        batch = _get_batch(request.active_tenant_id, product_pk, pk)
+
+        if batch.status == Batch.Status.RECALLED:
+            raise ValidationError({"detail": "Batch is already recalled."})
+
+        reason = (request.data.get("reason") or "")[:500]
+        now = timezone.now()
+
+        batch.status = Batch.Status.RECALLED
+        batch.save(update_fields=["status", "updated_at"])
+
+        codes_deactivated = Code.unscoped.filter(
+            tenant_id=request.active_tenant_id,
+            batch=batch,
+            status=Code.Status.ACTIVE,
+        ).update(
+            status=Code.Status.DEACTIVATED,
+            deactivated_at=now,
+            deactivated_by=request.user,
+            deactivation_reason=reason or "Batch recalled.",
+            updated_at=now,
+        )
+
+        audit.record(
+            action="catalogue.batch.recalled",
+            actor=request.user,
+            tenant=request.active_membership.tenant,
+            target=batch,
+            after={"reason": reason, "codes_deactivated": codes_deactivated},
+        )
+        return Response({"batch": BatchSerializer(batch).data, "codes_deactivated": codes_deactivated})
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 def _require_owner_or_admin(request, view):
     perm = IsOwnerOrAdmin()
     if not perm.has_permission(request, view):
-        from rest_framework.exceptions import PermissionDenied
         raise PermissionDenied(perm.message)
 
 
