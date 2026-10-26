@@ -20,6 +20,16 @@ logger = logging.getLogger(__name__)
 _PASSTHROUGH_HEADERS = ("Retry-After", "WWW-Authenticate", "Allow")
 
 
+class LoginFailed(APIException):
+    """Use instead of AuthenticationFailed on endpoints with no authentication_classes.
+    DRF converts AuthenticationFailed → 403 when there is no WWW-Authenticate header to attach;
+    this exception bypasses that and always returns 401."""
+
+    status_code = status.HTTP_401_UNAUTHORIZED
+    default_detail = "Invalid credentials."
+    default_code = "authentication_failed"
+
+
 class IdempotencyKeyRequired(APIException):
     status_code = status.HTTP_400_BAD_REQUEST
     default_detail = "A valid Idempotency-Key header (8-128 URL-safe characters) is required."

@@ -5,7 +5,9 @@ from django.contrib.auth import login as auth_login
 from django.contrib.auth import logout as auth_logout
 from django_otp.plugins.otp_totp.models import TOTPDevice
 from rest_framework import status
-from rest_framework.exceptions import AuthenticationFailed, PermissionDenied, ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
+
+from apps.core.exceptions import LoginFailed
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -52,7 +54,7 @@ class LoginView(APIView):
             password=serializer.validated_data["password"],
         )
         if user is None or not user.is_active:
-            raise AuthenticationFailed("Invalid credentials.")
+            raise LoginFailed()
 
         confirmed_device = TOTPDevice.objects.filter(user=user, confirmed=True).first()
         if confirmed_device:
@@ -139,7 +141,7 @@ class MFAVerifyView(APIView):
 
         device = TOTPDevice.objects.filter(user=user, confirmed=True).first()
         if device is None or not device.verify_token(serializer.validated_data["token"]):
-            raise AuthenticationFailed("Invalid token.")
+            raise LoginFailed("Invalid token.")
 
         del request.session[_PENDING_USER_KEY]
         auth_login(request, user, backend="django.contrib.auth.backends.ModelBackend")

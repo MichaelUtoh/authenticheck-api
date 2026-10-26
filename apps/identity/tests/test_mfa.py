@@ -1,7 +1,16 @@
+import time
+
 import pytest
 from django.contrib.auth import get_user_model
+from django_otp.oath import TOTP
 from django_otp.plugins.otp_totp.models import TOTPDevice
 from rest_framework.test import APIClient
+
+
+def _current_token(device):
+    totp = TOTP(device.bin_key, device.step, device.t0, device.digits)
+    totp.time = time.time()
+    return totp.token()
 
 User = get_user_model()
 pytestmark = pytest.mark.django_db
@@ -62,7 +71,7 @@ def test_mfa_verify_completes_login(user):
         "/api/v1/auth/login", {"email": "mfa@example.com", "password": "a-long-test-password"}
     )
     # Step 2
-    response = client.post("/api/v1/auth/mfa/verify", {"token": device.token()})
+    response = client.post("/api/v1/auth/mfa/verify", {"token": _current_token(device)})
     assert response.status_code == 200
     assert response.data["email"] == user.email
     assert client.session.get("_mfa_verified") is True

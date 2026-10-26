@@ -11,6 +11,7 @@ api_v1_patterns = [
     path("health/ready", ReadyView.as_view(), name="health-ready"),
     path("", include("apps.identity.urls")),
     path("", include("apps.tenants.urls")),
+    path("", include("apps.catalogue.urls")),
 ]
 
 urlpatterns = [

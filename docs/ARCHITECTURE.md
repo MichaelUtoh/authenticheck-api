@@ -37,8 +37,8 @@
 ## Phase roadmap
 
 - [x] Phase 0 – Foundation
-- [ ] Phase 1 – Identity and tenants (auth, MFA, onboarding, memberships, roles, tenant-context permission)
-- [ ] Phase 2 – Catalogue (brands, products, regulatory refs, batches, bulk import)
+- [x] Phase 1 – Identity and tenants (auth, MFA, onboarding, memberships, roles, tenant-context permission)
+- [x] Phase 2 – Catalogue (brands, products, regulatory refs, batches, bulk import)
 - [ ] Phase 3 – Issuance and export (jobs, unique codes, reconciliation, deactivation)
 - [ ] Phase 4 – Public verification (resolver, scan events, rate limits)
 - [ ] Phase 5 – Risk, cases, recall/deactivation, consumer reports

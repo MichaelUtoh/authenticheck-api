@@ -33,7 +33,7 @@ THIRD_PARTY_APPS = [
     "django_otp",
     "django_otp.plugins.otp_totp",
 ]
-LOCAL_APPS = ["apps.core", "apps.accounts", "apps.tenants", "apps.audit", "apps.identity"]
+LOCAL_APPS = ["apps.core", "apps.accounts", "apps.tenants", "apps.audit", "apps.identity", "apps.catalogue"]
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
 
 # Custom user model from day one: swapping it later is painful.
