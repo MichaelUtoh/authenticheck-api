@@ -40,6 +40,8 @@ class AuditEvent(models.Model):
     after = models.JSONField(null=True, blank=True, encoder=DjangoJSONEncoder)
     metadata = models.JSONField(default=dict, blank=True, encoder=DjangoJSONEncoder)
     request_id = models.CharField(max_length=64, blank=True)
+    prev_hash = models.CharField(max_length=64, blank=True)
+    event_hash = models.CharField(max_length=64, blank=True, db_index=True)
 
     objects = AuditQuerySet.as_manager()
 
