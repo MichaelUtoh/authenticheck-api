@@ -33,7 +33,7 @@ THIRD_PARTY_APPS = [
     "django_otp",
     "django_otp.plugins.otp_totp",
 ]
-LOCAL_APPS = ["apps.core", "apps.accounts", "apps.tenants", "apps.audit", "apps.identity", "apps.catalogue", "apps.issuance", "apps.verification", "apps.risk"]
+LOCAL_APPS = ["apps.core", "apps.accounts", "apps.tenants", "apps.audit", "apps.identity", "apps.catalogue", "apps.issuance", "apps.verification", "apps.risk", "apps.analytics", "apps.platform", "apps.webhooks", "apps.integrations"]
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
 
 # Custom user model from day one: swapping it later is painful.
@@ -166,7 +166,10 @@ STORAGES = {
 # --- DRF ------------------------------------------------------------------------------------
 REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
-    "DEFAULT_AUTHENTICATION_CLASSES": ["apps.identity.authentication.JWTAuthentication"],
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "apps.identity.authentication.JWTAuthentication",
+        "apps.identity.authentication.APIKeyAuthentication",
+    ],
     "DEFAULT_PERMISSION_CLASSES": ["apps.identity.permissions.IsAuthenticatedSession"],  # deny by default
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
     "DEFAULT_PARSER_CLASSES": ["rest_framework.parsers.JSONParser"],  # opt in to multipart per view
@@ -214,8 +217,12 @@ SPECTACULAR_SETTINGS = {
         "RiskFlagKindEnum": "apps.risk.models.RiskFlag.Kind",
         "RiskFlagSeverityEnum": "apps.risk.models.RiskFlag.Severity",
         "CaseStatusEnum": "apps.risk.models.Case.Status",
+        "WebhookEndpointStatusEnum": "apps.webhooks.models.WebhookEndpoint.Status",
+        "WebhookDeliveryStatusEnum": "apps.webhooks.models.WebhookDelivery.Status",
     },
 }
+
+AFRICASTALKING_API_KEY = env("AFRICASTALKING_API_KEY", default="")
 
 RISK_REPEATED_SCAN_THRESHOLD = env.int("RISK_REPEATED_SCAN_THRESHOLD", default=10)
 

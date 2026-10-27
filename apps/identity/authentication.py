@@ -151,3 +151,61 @@ def _touch_session(session) -> None:
         AuthSession.objects.filter(pk=session.pk).update(last_used_at=timezone.now())
     except Exception:
         pass
+
+
+class APIKeyAuthentication(BaseAuthentication):
+    """Authenticate via `X-API-Key: ac_<token>` header.
+
+    Sets request.active_membership and request.active_tenant_id so that
+    HasActiveTenantMembership short-circuits on the API-key path.
+    """
+
+    def authenticate(self, request):
+        from apps.core.tenancy import _current_tenant_id
+        from apps.identity.models import APIKey, _hash_key
+        from apps.tenants.models import Tenant
+
+        key = request.META.get("HTTP_X_API_KEY", "").strip()
+        if not key or not key.startswith("ac_") or len(key) < 11:
+            return None
+
+        prefix = key[3:11]
+        key_hash = _hash_key(key)
+
+        api_key = (
+            APIKey.unscoped
+            .filter(key_prefix=prefix, key_hash=key_hash)
+            .select_related("membership__tenant", "created_by")
+            .first()
+        )
+
+        if api_key is None or not api_key.is_active:
+            raise AuthenticationFailed(
+                {"code": "api_key_invalid", "message": "API key is invalid or revoked."}
+            )
+
+        from apps.tenants.models import Membership
+        if api_key.membership.status != Membership.Status.ACTIVE:
+            raise AuthenticationFailed(
+                {"code": "api_key_invalid", "message": "Associated membership is not active."}
+            )
+
+        if api_key.membership.tenant.status != Tenant.Status.APPROVED:
+            raise AuthenticationFailed(
+                {"code": "tenant_suspended", "message": "Tenant is not in an active state."}
+            )
+
+        tid = api_key.tenant_id
+        _current_tenant_id.set(tid)
+        request.active_tenant_id = tid
+        request.active_membership = api_key.membership
+        request.auth_context = {"api_key_id": str(api_key.pk)}
+
+        # Best-effort update
+        from django.utils import timezone
+        APIKey.unscoped.filter(pk=api_key.pk).update(last_used_at=timezone.now())
+
+        return api_key.created_by, request.auth_context
+
+    def authenticate_header(self, request):
+        return 'X-API-Key realm="AuthentiCheck"'

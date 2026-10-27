@@ -75,6 +75,10 @@ class IssuanceJobListCreateView(APIView):
         if batch.status != Batch.Status.ACTIVE:
             raise ValidationError({"batch_id": "Only active batches can have codes issued."})
 
+        tenant = request.active_membership.tenant
+        if tenant.is_pharma:
+            _check_pharma_batch(batch)
+
         job = IssuanceJob(
             tenant=request.active_membership.tenant,
             batch=batch,
@@ -309,6 +313,26 @@ def _get_job(tenant_id, pk):
 
 def _get_batch(tenant_id, batch_id):
     try:
-        return Batch.unscoped.get(pk=batch_id, tenant_id=tenant_id)
+        return Batch.unscoped.select_related("product").get(pk=batch_id, tenant_id=tenant_id)
     except Batch.DoesNotExist:
         raise NotFound("Batch not found.") from None
+
+
+def _check_pharma_batch(batch) -> None:
+    """Reject issuance for pharma tenants if the batch is expired or has no valid reg ref."""
+    from datetime import date
+    from django.db.models import Q as _Q
+
+    today = date.today()
+    if batch.expires_at and batch.expires_at < today:
+        raise ValidationError(
+            {"batch_id": "Pharma tenants cannot issue codes for an expired batch."}
+        )
+
+    has_ref = batch.product.regulatory_refs.filter(
+        _Q(valid_until__isnull=True) | _Q(valid_until__gte=today)
+    ).exists()
+    if not has_ref:
+        raise ValidationError(
+            {"batch_id": "Pharma batches require at least one valid regulatory reference."}
+        )

@@ -1,6 +1,8 @@
 from django.urls import path
 
 from .views import (
+    APIKeyListCreateView,
+    APIKeyRevokeView,
     LoginView,
     LogoutView,
     MeView,
@@ -19,4 +21,7 @@ urlpatterns = [
     # Legacy session-based MFA setup — replaced in Phase 6 by challenge-token endpoints
     path("auth/mfa/setup", MFASetupView.as_view(), name="auth-mfa-setup"),
     path("auth/mfa/confirm", MFAConfirmView.as_view(), name="auth-mfa-confirm"),
+    # API Keys
+    path("api-keys", APIKeyListCreateView.as_view(), name="apikey-list-create"),
+    path("api-keys/<uuid:pk>", APIKeyRevokeView.as_view(), name="apikey-revoke"),
 ]

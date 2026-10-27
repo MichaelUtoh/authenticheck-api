@@ -1,3 +1,5 @@
+import hashlib
+import secrets
 import uuid
 
 from django.conf import settings
@@ -5,6 +7,7 @@ from django.db import models
 from django.utils import timezone
 
 from apps.core.models import BaseModel
+from apps.core.tenancy import TenantScopedModel
 
 
 class AuthSession(BaseModel):
@@ -211,3 +214,62 @@ class SupportAccessGrant(BaseModel):
             and self.revoked_at is None
             and self.expires_at > timezone.now()
         )
+
+
+def _generate_raw_key() -> str:
+    """Return a new raw API key: `ac_<43-char url-safe base64>`."""
+    return "ac_" + secrets.token_urlsafe(32)
+
+
+def _hash_key(raw_key: str) -> str:
+    return hashlib.sha256(raw_key.encode()).hexdigest()
+
+
+class APIKey(TenantScopedModel):
+    """Tenant-scoped API key for machine-to-machine access.
+
+    The raw key is returned once on creation and never stored — only a SHA-256 hash
+    and the first 8 chars of the random suffix (for indexed lookup) are kept.
+    """
+
+    name = models.CharField(max_length=100)
+    key_prefix = models.CharField(max_length=8, db_index=True)
+    key_hash = models.CharField(max_length=64, db_index=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="+",
+    )
+    membership = models.ForeignKey(
+        "tenants.Membership",
+        on_delete=models.CASCADE,
+        related_name="api_keys",
+    )
+    last_used_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"APIKey '{self.name}' ({self.key_prefix}…)"
+
+    @property
+    def is_active(self):
+        now = timezone.now()
+        return self.revoked_at is None and (
+            self.expires_at is None or self.expires_at > now
+        )
+
+    @classmethod
+    def create_key(cls, *, name: str, tenant, membership, created_by) -> tuple["APIKey", str]:
+        """Create and save a new APIKey. Returns (instance, raw_key)."""
+        raw = _generate_raw_key()
+        instance = cls(
+            name=name,
+            tenant=tenant,
+            key_prefix=raw[3:11],  # 8 chars after "ac_"
+            key_hash=_hash_key(raw),
+            created_by=created_by,
+            membership=membership,
+        )
+        instance.save()
+        return instance, raw

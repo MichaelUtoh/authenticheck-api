@@ -14,7 +14,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 from django_otp.plugins.otp_totp.models import TOTPDevice
-from drf_spectacular.utils import extend_schema, inline_serializer
+from drf_spectacular.utils import extend_schema, extend_schema_view, inline_serializer
 from rest_framework import serializers as s
 from rest_framework import status
 from rest_framework.exceptions import AuthenticationFailed, PermissionDenied, ValidationError
@@ -24,6 +24,7 @@ from rest_framework.views import APIView
 
 from apps.audit import services as audit
 from apps.core.exceptions import LoginFailed
+from apps.tenants.permissions import HasActiveTenantMembership, IsOwnerOrAdmin
 from apps.identity.models import AuthSession, MFAChallenge
 from apps.identity.permissions import IsAuthenticatedSession
 from apps.identity.serializers import (
@@ -512,3 +513,149 @@ class MFAConfirmView(APIView):
         device.save(update_fields=["confirmed"])
         audit.record(action="auth.mfa.enabled", actor=request.user)
         return Response({"mfa_enabled": True})
+
+
+# ---------------------------------------------------------------------------
+# API Keys
+# ---------------------------------------------------------------------------
+
+
+@extend_schema_view(
+    get=extend_schema(
+        responses={
+            200: inline_serializer(
+                "APIKeyListItem",
+                fields={
+                    "id": s.UUIDField(),
+                    "name": s.CharField(),
+                    "key_prefix": s.CharField(),
+                    "last_used_at": s.DateTimeField(allow_null=True),
+                    "expires_at": s.DateTimeField(allow_null=True),
+                    "revoked_at": s.DateTimeField(allow_null=True),
+                    "created_at": s.DateTimeField(),
+                },
+                many=True,
+            )
+        },
+        tags=["API Keys"],
+        summary="List API keys for the active tenant",
+    ),
+    post=extend_schema(
+        request=inline_serializer(
+            "APIKeyCreateRequest",
+            fields={
+                "name": s.CharField(),
+                "expires_at": s.DateTimeField(required=False, allow_null=True),
+            },
+        ),
+        responses={
+            201: inline_serializer(
+                "APIKeyCreateResponse",
+                fields={
+                    "id": s.UUIDField(),
+                    "name": s.CharField(),
+                    "key": s.CharField(
+                        help_text="Raw API key — shown once, store it securely."
+                    ),
+                    "key_prefix": s.CharField(),
+                    "created_at": s.DateTimeField(),
+                },
+            )
+        },
+        tags=["API Keys"],
+        summary="Create an API key",
+        description=(
+            "Returns the raw `key` once. Store it securely — it cannot be retrieved again. "
+            "Send it in the `X-API-Key` header on subsequent requests."
+        ),
+    ),
+)
+class APIKeyListCreateView(APIView):
+    permission_classes = [IsAuthenticated, HasActiveTenantMembership, IsOwnerOrAdmin]
+
+    def get(self, request):
+        from apps.identity.models import APIKey
+        keys = APIKey.objects.order_by("-created_at")
+        data = [
+            {
+                "id": str(k.pk),
+                "name": k.name,
+                "key_prefix": k.key_prefix,
+                "last_used_at": k.last_used_at,
+                "expires_at": k.expires_at,
+                "revoked_at": k.revoked_at,
+                "created_at": k.created_at,
+            }
+            for k in keys
+        ]
+        return Response(data)
+
+    def post(self, request):
+        from apps.identity.models import APIKey
+
+        name = request.data.get("name", "").strip()
+        if not name:
+            raise ValidationError({"name": "This field is required."})
+        if len(name) > 100:
+            raise ValidationError({"name": "Name must be 100 characters or fewer."})
+
+        expires_at = request.data.get("expires_at")
+
+        api_key, raw_key = APIKey.create_key(
+            name=name,
+            tenant=request.active_membership.tenant,
+            membership=request.active_membership,
+            created_by=request.user,
+        )
+        if expires_at:
+            api_key.expires_at = expires_at
+            api_key.save(update_fields=["expires_at"])
+
+        audit.record(
+            action="apikey.created",
+            actor=request.user,
+            tenant=request.active_membership.tenant,
+            target=api_key,
+            after={"name": name, "key_prefix": api_key.key_prefix},
+        )
+        return Response(
+            {
+                "id": str(api_key.pk),
+                "name": api_key.name,
+                "key": raw_key,
+                "key_prefix": api_key.key_prefix,
+                "created_at": api_key.created_at,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+@extend_schema(
+    responses={204: None},
+    tags=["API Keys"],
+    summary="Revoke an API key",
+)
+class APIKeyRevokeView(APIView):
+    permission_classes = [IsAuthenticated, HasActiveTenantMembership, IsOwnerOrAdmin]
+
+    def delete(self, request, pk):
+        from apps.identity.models import APIKey
+        from rest_framework.exceptions import NotFound as _NotFound
+
+        try:
+            api_key = APIKey.objects.get(pk=pk)
+        except APIKey.DoesNotExist:
+            raise _NotFound("API key not found.")
+
+        if api_key.revoked_at is not None:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        api_key.revoked_at = timezone.now()
+        api_key.save(update_fields=["revoked_at", "updated_at"])
+        audit.record(
+            action="apikey.revoked",
+            actor=request.user,
+            tenant=request.active_membership.tenant,
+            target=api_key,
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)

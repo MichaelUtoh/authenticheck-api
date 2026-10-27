@@ -20,6 +20,7 @@ class Tenant(BaseModel):
     status = models.CharField(
         max_length=20, choices=Status.choices, default=Status.PENDING, db_index=True
     )
+    is_pharma = models.BooleanField(default=False, db_index=True)
 
     def __str__(self):
         return self.trading_name or self.legal_name

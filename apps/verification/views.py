@@ -72,25 +72,34 @@ class VerifyView(APIView):
         scan = _record(code_str, code, result, ip, ua)
         _evaluate_risk(scan)
 
-        return Response(
-            VerifyGenuineSerializer({
-                "result": result,
-                "code": code.code,
-                "product": {
-                    "name": batch.product.name,
-                    "sku": batch.product.sku,
-                    "brand": batch.product.brand.name,
-                },
-                "batch": {
-                    "batch_number": batch.batch_number,
-                    "expires_at": batch.expires_at,
-                    "status": batch.status,
-                },
-                "manufacturer": {
-                    "name": code.tenant.legal_name,
-                },
-            }).data
-        )
+        _fire_verified(scan, code, result)
+
+        payload = {
+            "result": result,
+            "code": code.code,
+            "product": {
+                "name": batch.product.name,
+                "sku": batch.product.sku,
+                "brand": batch.product.brand.name,
+            },
+            "batch": {
+                "batch_number": batch.batch_number,
+                "expires_at": batch.expires_at,
+                "status": batch.status,
+            },
+            "manufacturer": {
+                "name": code.tenant.legal_name,
+            },
+        }
+
+        if getattr(code.tenant, "is_pharma", False):
+            payload["regulatory_refs"] = list(
+                batch.product.regulatory_refs
+                .values("country_code", "reference_number", "valid_until")
+                .order_by("country_code")
+            )
+
+        return Response(VerifyGenuineSerializer(payload).data)
 
 
 def _record(code_str: str, code, result: str, ip, ua: str) -> ScanEvent | None:
@@ -115,6 +124,24 @@ def _evaluate_risk(scan_event: ScanEvent | None) -> None:
         evaluate_scan(scan_event)
     except Exception:
         logger.exception("Risk evaluation failed for scan_event=%s", scan_event.pk)
+
+
+def _fire_verified(scan: ScanEvent | None, code, result: str) -> None:
+    if scan is None or code is None:
+        return
+    try:
+        from apps.webhooks.services import fire_event
+        fire_event(
+            tenant_id=code.tenant_id,
+            event_type="code.verified",
+            payload={
+                "code": code.code,
+                "result": result,
+                "scan_id": str(scan.pk),
+            },
+        )
+    except Exception:
+        logger.exception("fire_event failed for scan_event=%s", scan.pk)
 
 
 def _get_client_ip(request) -> str | None:

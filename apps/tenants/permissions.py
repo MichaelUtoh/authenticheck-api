@@ -18,6 +18,10 @@ class HasActiveTenantMembership(BasePermission):
         if not request.user or not request.user.is_authenticated:
             return False
 
+        # APIKeyAuthentication already resolved and validated the membership
+        if getattr(request, "active_membership", None) is not None:
+            return True
+
         raw = request.headers.get("X-Tenant-ID", "")
         try:
             tenant_id = uuid.UUID(raw)
