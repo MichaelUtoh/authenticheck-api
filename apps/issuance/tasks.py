@@ -28,20 +28,26 @@ _MAX_CODE_RETRIES = 10  # per slot; collision probability is so low this is just
 def generate_codes(self, job_id: str):
     from .models import Code, IssuanceJob
 
-    try:
-        job = IssuanceJob.unscoped.select_for_update().get(pk=job_id)
-    except IssuanceJob.DoesNotExist:
-        logger.error("IssuanceJob %s not found", job_id)
-        return
+    with transaction.atomic():
+        try:
+            job = (
+                IssuanceJob.unscoped
+                .select_related("batch__product")
+                .select_for_update()
+                .get(pk=job_id)
+            )
+        except IssuanceJob.DoesNotExist:
+            logger.error("IssuanceJob %s not found", job_id)
+            return
 
-    if job.status == IssuanceJob.Status.DONE:
-        return  # idempotent: already completed
+        if job.status == IssuanceJob.Status.DONE:
+            return  # idempotent: already completed
 
-    if job.status not in (IssuanceJob.Status.PENDING, IssuanceJob.Status.PROCESSING):
-        return
+        if job.status not in (IssuanceJob.Status.PENDING, IssuanceJob.Status.PROCESSING):
+            return
 
-    job.status = IssuanceJob.Status.PROCESSING
-    job.save(update_fields=["status", "updated_at"])
+        job.status = IssuanceJob.Status.PROCESSING
+        job.save(update_fields=["status", "updated_at"])
 
     already_issued = Code.unscoped.filter(issuance_job=job).count()
     remaining = job.quantity_requested - already_issued
@@ -63,7 +69,10 @@ def generate_codes(self, job_id: str):
         _finalise(job, issued)
     except Exception as exc:
         logger.exception("IssuanceJob %s failed during generation", job_id)
-        job.refresh_from_db()
+        try:
+            job = IssuanceJob.unscoped.get(pk=job_id)
+        except IssuanceJob.DoesNotExist:
+            raise self.retry(exc=exc)
         job.status = IssuanceJob.Status.FAILED
         job.errors = [{"error": str(exc)}]
         job.save(update_fields=["status", "errors", "updated_at"])

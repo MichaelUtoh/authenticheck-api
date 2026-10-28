@@ -53,6 +53,15 @@ _WRITE_PERMS = [IsAuthenticated, HasActiveTenantMembership, IsOwnerOrAdmin]
             "Requires an `Idempotency-Key` header (8–128 URL-safe chars). "
             "Poll `GET /issuance/jobs/{id}` until `status` is `done` or `failed`."
         ),
+        parameters=[
+            OpenApiParameter(
+                name="Idempotency-Key",
+                location=OpenApiParameter.HEADER,
+                required=True,
+                type=str,
+                description="Unique key (8–128 URL-safe chars) to make this request idempotent.",
+            )
+        ],
     ),
 )
 class IssuanceJobListCreateView(APIView):

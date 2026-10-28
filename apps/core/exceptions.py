@@ -71,12 +71,16 @@ def api_exception_handler(exc, context):
         )
     else:
         detail = getattr(exc, "detail", None)
-        code = getattr(detail, "code", None) or getattr(exc, "default_code", "error")
-        message = (
-            str(detail)
-            if detail is not None and not isinstance(detail, list | dict)
-            else "Request failed."
-        )
+        if isinstance(detail, dict) and "message" in detail:
+            code = str(detail.get("code", getattr(exc, "default_code", "error")))
+            message = str(detail["message"])
+        else:
+            code = getattr(detail, "code", None) or getattr(exc, "default_code", "error")
+            message = (
+                str(detail)
+                if detail is not None and not isinstance(detail, list | dict)
+                else "Request failed."
+            )
         details = None
 
     wrapped = _envelope(code, message, response.status_code, details)

@@ -220,6 +220,7 @@ SPECTACULAR_SETTINGS = {
         "WebhookEndpointStatusEnum": "apps.webhooks.models.WebhookEndpoint.Status",
         "WebhookDeliveryStatusEnum": "apps.webhooks.models.WebhookDelivery.Status",
     },
+    "SECURITY": [{"bearerAuth": []}],
 }
 
 AFRICASTALKING_API_KEY = env("AFRICASTALKING_API_KEY", default="")
