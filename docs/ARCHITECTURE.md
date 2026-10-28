@@ -14,33 +14,69 @@
 | 8 | `acks_late` + idempotent tasks | A worker crash redelivers the task; resumable issuance relies on this (EC-012). |
 | 9 | Admin URL configurable; Django admin = platform staff only | Tenant users never use Django admin; they use the API. |
 
-## Open decisions (to settle in Phase 1)
+## Resolved decisions
 
-1. **Client auth for Next.js:** session cookie (HttpOnly, SameSite, CSRF) on a shared parent domain, versus JWT in
-   HttpOnly cookies. Recommendation: session cookies if the frontend and API share a registrable domain.
-2. **Active-tenant selection:** `X-Tenant-ID` header validated against the user's membership on every request.
-3. **MFA:** TOTP via django-otp or a compatible library; mandatory for platform admins.
+1. **Client auth for Next.js:** JWT Bearer tokens. Access token returned in login response body;
+   refresh token in an HttpOnly `SameSite=Strict` cookie scoped to `/api/v1/auth/refresh`.
+   The Next.js frontend stores the access token in memory (not localStorage) and refreshes
+   silently on 401. CSRF protection is enforced via `X-Requested-With` on state-changing requests.
+2. **Active-tenant selection:** `tid` claim embedded in the JWT at login. The frontend holds the
+   selected tenant and re-authenticates (new login / token exchange) when switching tenants.
+3. **MFA:** TOTP via django-otp. Mandatory for platform staff (`is_staff=True`).
 
-## Phase 0 deliverables (this commit)
+## Phase deliverables
 
+### Phase 0 – Foundation
 - Project skeleton, per-environment settings, Docker/Compose, Makefile, CI, pre-commit
 - Custom user, minimal tenant, tenant-scoping framework
 - Audit service (append-only), idempotency utility, error envelope, request-ID logging
-- Health endpoints, OpenAPI docs, test suite for all of the above
+- Health endpoints, OpenAPI docs, test suite
 
-## Hardening deferred to Phase 6
+### Phase 1 – Identity & Tenants
+- JWT sessions (access + refresh tokens, HttpOnly cookie rotation)
+- TOTP MFA enrolment and challenge flow
+- Tenant registration, staff approval workflow, membership roles
+- Tenant-context permission enforced on every scoped request
 
-- DB-level audit protection (trigger denying UPDATE/DELETE) plus a hash chain for tamper evidence (EC-055)
-- Postgres row-level security as defence in depth for tenant isolation
-- Backup/restore drills, monitoring and alerting
+### Phase 2 – Catalogue
+- Brands, products, regulatory references, production batches
+- CSV bulk import with async job tracking
+
+### Phase 3 – Issuance & Export
+- Async code-generation jobs via Celery (`acks_late`, idempotent)
+- Unique 128-bit codes, reconciliation, per-code and bulk deactivation
+- CSV export of completed jobs
+
+### Phase 4 – Public Verification
+- `GET /verify/{code}` — public resolver, scan event recording, rate limiting
+- GS1 Digital Link redirect (`/01/{gtin}/21/{serial}`)
+- Webhook delivery on `code.verified`
+
+### Phase 5 – Risk, Cases & Recall
+- Automated risk flag generation (repeated scan, consumer report, recalled scan)
+- Case management (open → under_review → closed)
+- Batch recall with bulk code deactivation
+- Consumer counterfeit report endpoint (public)
+
+### Phase 6 – Analytics, Platform Dashboard & Hardening
+- Scan, code, and risk analytics endpoints
+- Platform staff dashboard (tenant list, cross-tenant flags, audit log)
+- Audit hash chain for tamper evidence
+- API key authentication (`X-API-Key: ac_<token>`)
+- Swagger auth (bearerAuth + apiKeyAuth OpenAPI extensions)
+
+### Phase 7 – Integrations & Pharma Readiness
+- Webhooks (endpoint management, HMAC-signed deliveries, delivery log)
+- Africa's Talking USSD inbound handler
+- Pharma-gated batch restrictions (expiry enforcement)
 
 ## Phase roadmap
 
 - [x] Phase 0 – Foundation
-- [x] Phase 1 – Identity and tenants (auth, MFA, onboarding, memberships, roles, tenant-context permission)
-- [x] Phase 2 – Catalogue (brands, products, regulatory refs, batches, bulk import)
-- [x] Phase 3 – Issuance and export (jobs, unique codes, reconciliation, deactivation)
-- [ ] Phase 4 – Public verification (resolver, scan events, rate limits)
-- [ ] Phase 5 – Risk, cases, recall/deactivation, consumer reports
-- [ ] Phase 6 – Analytics, platform dashboard, hardening
-- [ ] Phase 7 – Pharma readiness (gated), SMS/USSD, integrations
+- [x] Phase 1 – Identity and tenants
+- [x] Phase 2 – Catalogue
+- [x] Phase 3 – Issuance and export
+- [x] Phase 4 – Public verification
+- [x] Phase 5 – Risk, cases, recall
+- [x] Phase 6 – Analytics, platform dashboard, hardening
+- [x] Phase 7 – Pharma readiness, SMS/USSD, integrations
