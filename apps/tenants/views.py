@@ -165,3 +165,32 @@ class TenantMembersView(APIView):
             tenant_id=request.active_tenant_id, status=Membership.Status.ACTIVE
         ).select_related("user", "tenant")
         return Response(MembershipSerializer(members, many=True).data)
+
+
+@extend_schema(
+    responses={200: None},
+    tags=["Tenants"],
+    summary="Industry release gate states for the active tenant",
+)
+class ReleaseGatesView(APIView):
+    permission_classes = [IsAuthenticated, HasActiveTenantMembership]
+
+    def get(self, request):
+        return Response({
+            "cosmetics": {"status": "live"},
+            "pharmaceuticals": {
+                "status": "locked",
+                "items": [
+                    {
+                        "key": "nafdac_gs1_review",
+                        "label": "Qualified NAFDAC / GS1 review",
+                        "state": "in_progress",
+                    },
+                    {
+                        "key": "identifier_decision",
+                        "label": "Identifier & data-carrier decision",
+                        "state": "not_started",
+                    },
+                ],
+            },
+        })

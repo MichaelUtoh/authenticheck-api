@@ -5,7 +5,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.catalogue.models import Batch
+from apps.catalogue.models import Batch, Product
 from apps.issuance.models import Code
 
 from .models import ScanEvent
@@ -41,7 +41,12 @@ class VerifyView(APIView):
         try:
             code = (
                 Code.unscoped
-                .select_related("batch__product__brand", "tenant")
+                .select_related(
+                    "batch__product__brand",
+                    "batch__product__reference_image",
+                    "batch__product__tenant",
+                    "tenant",
+                )
                 .get(code=code_str)
             )
         except Code.DoesNotExist:
@@ -64,6 +69,16 @@ class VerifyView(APIView):
             )
 
         batch = code.batch
+        product = batch.product
+
+        # Only approved products are resolvable
+        if product.status != Product.Status.APPROVED:
+            _record(code_str, code, ScanEvent.Result.NOT_FOUND, ip, ua)
+            return Response(
+                {"result": "not_found", "detail": "Code not found."},
+                status=404,
+            )
+
         result = (
             ScanEvent.Result.RECALLED
             if batch.status == Batch.Status.RECALLED
@@ -71,31 +86,55 @@ class VerifyView(APIView):
         )
         scan = _record(code_str, code, result, ip, ua)
         _evaluate_risk(scan)
-
         _fire_verified(scan, code, result)
+
+        vis = product.consumer_visibility or {}
+
+        product_payload = {
+            "name": product.name,
+            "sku": product.sku,
+            "brand": product.brand.name,
+            "industry": product.industry,
+            "variant": product.variant,
+            "size": product.size,
+        }
+        batch_payload = {
+            "batch_number": batch.batch_number,
+            "manufactured_at": batch.manufactured_at,
+            "expires_at": batch.expires_at,
+            "status": batch.status,
+        }
+
+        # Apply consumer_visibility — omit (not null) hidden fields
+        if not vis.get("brand", True):
+            product_payload.pop("brand", None)
+        if not vis.get("variant_size", True):
+            product_payload.pop("variant", None)
+            product_payload.pop("size", None)
+        if not vis.get("batch_number", True):
+            batch_payload.pop("batch_number", None)
+        if not vis.get("manufacture_date", True):
+            batch_payload.pop("manufactured_at", None)
+        if not vis.get("expiry", True):
+            batch_payload.pop("expires_at", None)
 
         payload = {
             "result": result,
             "code": code.code,
-            "product": {
-                "name": batch.product.name,
-                "sku": batch.product.sku,
-                "brand": batch.product.brand.name,
-            },
-            "batch": {
-                "batch_number": batch.batch_number,
-                "expires_at": batch.expires_at,
-                "status": batch.status,
-            },
+            "product": product_payload,
+            "batch": batch_payload,
             "manufacturer": {
                 "name": code.tenant.legal_name,
             },
         }
 
-        if getattr(code.tenant, "is_pharma", False):
+        if vis.get("product_image", True) and product.reference_image_id:
+            payload["product_image"] = {"url": product.reference_image.url}
+
+        if vis.get("regulatory_reference", True) and getattr(code.tenant, "is_pharma", False):
             payload["regulatory_refs"] = list(
-                batch.product.regulatory_refs
-                .values("country_code", "reference_number", "valid_until")
+                product.regulatory_refs
+                .values("country_code", "reference_number", "valid_until", "verification_status")
                 .order_by("country_code")
             )
 

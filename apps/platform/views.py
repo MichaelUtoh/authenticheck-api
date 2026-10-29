@@ -1,12 +1,17 @@
 from django.db.models import Count, Q
+from django.utils import timezone
 from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
 from drf_spectacular.types import OpenApiTypes
-from rest_framework.exceptions import NotFound
+from rest_framework import serializers as s
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.audit import services as audit
 from apps.audit.models import AuditEvent
+from apps.catalogue.models import Product, RegulatoryRef
+from apps.catalogue.serializers import RegulatoryRefSerializer
 from apps.core.pagination import StandardPagination
 from apps.issuance.models import Code
 from apps.risk.models import RiskFlag
@@ -154,3 +159,52 @@ class PlatformAuditLogView(APIView):
         return paginator.get_paginated_response(
             PlatformAuditEventSerializer(page, many=True).data
         )
+
+
+@extend_schema(
+    request=s.Serializer,
+    responses={200: RegulatoryRefSerializer},
+    tags=["Platform — Catalogue"],
+    summary="Mark a regulatory reference as verified (staff)",
+)
+class RegulatoryRefVerifyView(APIView):
+    permission_classes = _STAFF_PERMS
+
+    def post(self, request, product_id, ref_id):
+        try:
+            product = Product.unscoped.get(pk=product_id)
+        except Product.DoesNotExist:
+            raise NotFound("Product not found.")
+        try:
+            ref = RegulatoryRef.unscoped.get(pk=ref_id, product=product)
+        except RegulatoryRef.DoesNotExist:
+            raise NotFound("Regulatory reference not found.")
+
+        method = request.data.get("method", "")
+        note = request.data.get("note", "")
+        if not method:
+            raise ValidationError({"method": "This field is required."})
+
+        now = timezone.now()
+        ref.verification_status = RegulatoryRef.VerificationStatus.VERIFIED
+        ref.verified_by = request.user
+        ref.verified_at = now
+        ref.verification_method = method
+        ref.verification_note = note
+        ref.save(update_fields=[
+            "verification_status", "verified_by", "verified_at",
+            "verification_method", "verification_note", "updated_at",
+        ])
+
+        audit.record(
+            action="catalogue.regulatory_ref.verified",
+            actor=request.user,
+            tenant=None,
+            target=ref,
+            after={
+                "verification_status": ref.verification_status,
+                "method": method,
+                "verified_at": now.isoformat(),
+            },
+        )
+        return Response(RegulatoryRefSerializer(ref).data)
