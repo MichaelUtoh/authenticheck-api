@@ -291,6 +291,11 @@ class ProductDetailView(APIView):
     def patch(self, request, pk):
         _require_owner_or_admin(request, self)
         product = _get_product(request.active_tenant_id, pk)
+        if product.status == Product.Status.IN_REVIEW:
+            raise ValidationError(
+                {"status": "Products under review cannot be edited."},
+                code="product_not_editable",
+            )
         serializer = ProductWriteSerializer(product, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
 
