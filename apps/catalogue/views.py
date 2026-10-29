@@ -16,6 +16,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.audit import services as audit
+from apps.core.pagination import StandardPagination
 from apps.core.tenancy import tenant_context
 from apps.issuance.models import Code
 from apps.tenants.permissions import HasActiveTenantMembership, IsOwnerOrAdmin
@@ -163,6 +164,10 @@ class BrandDetailView(APIView):
         responses={200: ProductSerializer(many=True)},
         tags=["Catalogue — Products"],
         summary="List all products for the tenant",
+        parameters=[
+            OpenApiParameter("page", OpenApiTypes.INT, description="Page number"),
+            OpenApiParameter("page_size", OpenApiTypes.INT, description="Results per page (max 100, default 25)"),
+        ],
     ),
     post=extend_schema(
         request=ProductWriteSerializer,
@@ -175,8 +180,10 @@ class ProductListCreateView(APIView):
     permission_classes = _BASE_PERMS
 
     def get(self, request):
-        products = Product.objects.select_related("brand").order_by("sku")
-        return Response(ProductSerializer(products, many=True).data)
+        qs = Product.objects.select_related("brand").order_by("sku")
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(qs, request)
+        return paginator.get_paginated_response(ProductSerializer(page, many=True).data)
 
     def post(self, request):
         _require_owner_or_admin(request, self)
