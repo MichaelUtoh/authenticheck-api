@@ -179,4 +179,5 @@ def test_pharma_tenant_blocks_expired_batch(jwt_client, owner, tenant, membershi
         {"batch_id": str(batch.pk), "quantity": 10},
         headers={"Idempotency-Key": "pharma-test-001"},
     )
-    assert response.status_code == 400
+    assert response.status_code == 409  # expired batches are rejected for every tenant
+    assert response.data["error"]["code"] == "batch_not_active"

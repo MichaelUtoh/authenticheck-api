@@ -1,6 +1,8 @@
 """Celery task: generate unique codes for an IssuanceJob.
 
 Design:
+- A mid-run failure leaves the job PARTIAL (or FAILED if nothing was made); resume re-enters
+  this task and generates only the missing codes.
 - `acks_late=True`: a worker crash redelivers the task; the task is safe to re-run
   because it checks status and skips jobs that are already DONE.
 - Codes are generated in bulk_create chunks of _CHUNK_SIZE to bound memory use.
@@ -68,15 +70,16 @@ def generate_codes(self, job_id: str):
 
         _finalise(job, issued)
     except Exception as exc:
+        # Keep what was generated. A job with some codes is PARTIAL (resumable through
+        # POST /issuance/jobs/{id}/resume); one with none is FAILED. No automatic retry: the job
+        # leaves PROCESSING here, so a redelivered task would exit immediately.
         logger.exception("IssuanceJob %s failed during generation", job_id)
-        try:
-            job = IssuanceJob.unscoped.get(pk=job_id)
-        except IssuanceJob.DoesNotExist:
-            raise self.retry(exc=exc)
-        job.status = IssuanceJob.Status.FAILED
+        generated = Code.unscoped.filter(issuance_job_id=job_id).count()
+        job = IssuanceJob.unscoped.get(pk=job_id)
+        job.quantity_issued = generated
+        job.status = IssuanceJob.Status.PARTIAL if generated else IssuanceJob.Status.FAILED
         job.errors = [{"error": str(exc)}]
-        job.save(update_fields=["status", "errors", "updated_at"])
-        raise self.retry(exc=exc)
+        job.save(update_fields=["quantity_issued", "status", "errors", "updated_at"])
 
 
 def _generate_chunk(job, product, size: int) -> list:
@@ -125,4 +128,5 @@ def _insert_one(obj):
 def _finalise(job, issued: int):
     job.quantity_issued = issued
     job.status = "done"
-    job.save(update_fields=["quantity_issued", "status", "updated_at"])
+    job.errors = []
+    job.save(update_fields=["quantity_issued", "status", "errors", "updated_at"])

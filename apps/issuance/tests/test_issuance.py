@@ -43,7 +43,8 @@ def batch(tenant):
     with tenant_context(tenant.pk):
         brand = Brand.objects.create(tenant=tenant, name="IssueBrand", slug="issuebrand")
         product = Product.objects.create(
-            tenant=tenant, brand=brand, name="Issue Product", sku="ISS-001"
+            tenant=tenant, brand=brand, name="Issue Product", sku="ISS-001",
+            status=Product.Status.APPROVED, approved_version=1,
         )
         return Batch.objects.create(
             tenant=tenant, product=product, batch_number="BATCH-001", quantity=1000
@@ -121,7 +122,8 @@ def test_create_job_rejects_inactive_batch(owner, tenant, batch):
         {"batch_id": str(batch.pk), "quantity": 5},
         HTTP_IDEMPOTENCY_KEY="inactive-batch-key",
     )
-    assert response.status_code == 400
+    assert response.status_code == 409
+    assert response.data["error"]["code"] == "batch_not_active"
 
 
 def test_create_job_requires_owner_or_admin(tenant, batch):

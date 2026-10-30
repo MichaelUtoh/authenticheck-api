@@ -2,6 +2,8 @@ from django.urls import path
 
 from .views import (
     BatchDetailView,
+    BatchGlobalDetailView,
+    BatchGlobalListView,
     BatchListCreateView,
     BatchRecallView,
     BrandDetailView,
@@ -45,6 +47,8 @@ urlpatterns = [
         RegulatoryRefListCreateView.as_view(),
         name="regulatory-ref-list",
     ),
+    path("catalogue/batches", BatchGlobalListView.as_view(), name="batch-global-list"),
+    path("catalogue/batches/<uuid:pk>", BatchGlobalDetailView.as_view(), name="batch-global-detail"),
     path(
         "catalogue/products/<uuid:product_pk>/batches",
         BatchListCreateView.as_view(),

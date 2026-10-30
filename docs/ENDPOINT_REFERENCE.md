@@ -159,8 +159,18 @@ per-field `details`.
 
 ## Catalogue — Batches
 
+Batch `status` is `active`, `recalled` or `expired`. An `active` batch whose `expires_at` has passed is returned as `expired` (computed, not stored). `declared_quantity` is the same value as `quantity` (either name can be written; a value must be at least 1). Every batch response includes `product_name` (name · variant · size) and an `issuance` object:
+
+```json
+"issuance": { "requested": 20000, "generated": 19950, "failed": 50, "deactivated": 12 }
+```
+
+`requested` is the sum over the batch's jobs, `generated` the codes actually created, `failed` the codes still missing from `partial` or `failed` jobs, and `deactivated` the codes switched off.
+
 | Method | Path | Auth | Description |
 |---|---|---|---|
+| `GET` | `/catalogue/batches` | 🏢 | List batches across all products (paginated). Filters: `q` (batch number or product name), `status` (repeatable: `active`, `recalled`, `expired`), `product_id`, `ordering` (`-created_at` default, `created_at`, `batch_number`, `-batch_number`, `best_before`, `-best_before`), `page`, `page_size` |
+| `GET` | `/catalogue/batches/{id}` | 🏢 | One batch by id, no `product_id` needed |
 | `GET` | `/catalogue/products/{product_id}/batches` | 🏢 | List batches for a product |
 | `POST` | `/catalogue/products/{product_id}/batches` | ✏️ | Create a batch (`product_id` also required in the body) |
 | `GET` | `/catalogue/products/{product_id}/batches/{id}` | 🏢 | Get a batch |
@@ -180,11 +190,14 @@ per-field `details`.
 
 ## Issuance — Jobs
 
+Job `status`: `pending`, `processing`, `partial` (some codes generated, the rest failed; resumable), `done`, `failed` (nothing generated). Each job returns `batch_number`, `product_name`, `quantity_requested`, `quantity_generated` (same as `quantity_issued`), `quantity_failed` (codes still missing from a `partial` or `failed` job, otherwise 0), `started_at` and `started_by` (`{id, name}`).
+
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/issuance/jobs` | 🏢 | List issuance jobs |
-| `POST` | `/issuance/jobs` | 👑 | Submit a code-generation job ⚠️ requires `Idempotency-Key` header |
+| `GET` | `/issuance/jobs` | 🏢 | List issuance jobs. Filters: `batch_id`, `status` (repeatable) |
+| `POST` | `/issuance/jobs` | 👑 | Submit a code-generation job ⚠️ requires `Idempotency-Key` header. `409 batch_not_active` for a recalled or expired batch, `409 product_not_approved` unless the product is approved |
 | `GET` | `/issuance/jobs/{id}` | 🏢 | Get job status and reconciliation |
+| `POST` | `/issuance/jobs/{id}/resume` | 👑 | Generate only the missing codes of a `partial` job (or a `failed` job that has some codes). Never duplicates codes. Returns `202`. While a run is already in progress it returns that job instead of starting a second run. `409 job_not_resumable` otherwise. `Idempotency-Key` optional |
 | `GET` | `/issuance/jobs/{id}/export` | 🏢 | Download codes CSV (only when `status === 'done'`) |
 
 ---
@@ -193,7 +206,7 @@ per-field `details`.
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/issuance/codes` | 🏢 | List codes, paginated (`count/next/previous/results`; `page`, `page_size` max 100). Filter by `batch_id`, `job_id`, `status` |
+| `GET` | `/issuance/codes` | 🏢 | List codes, paginated (`count/next/previous/results`; `page`, `page_size` max 100). Filter by `batch_id`, `job_id`, `status`; `q` finds a code by full or partial text (case-insensitive, dashes optional) |
 | `POST` | `/issuance/codes/{code}/deactivate` | 👑 | Deactivate a single code by its code string |
 | `POST` | `/issuance/batches/{batch_id}/deactivate` | 👑 | Bulk-deactivate all active codes for a batch |
 
@@ -292,6 +305,9 @@ are not yet approved, or are suspended by staff, return `404 not_found`.
 | 409 | `field_locked` | Changing `industry` after creation, or `sku` / `gtin` after approval |
 | 409 | `gtin_conflict` | Approving a product whose GTIN is registered against another product |
 | 409 | `image_in_use` | Deleting an image a product still references |
+| 409 | `batch_not_active` | Issuing codes for (or resuming a job of) a recalled or expired batch |
+| 409 | `product_not_approved` | Issuing codes for a product that is not approved |
+| 409 | `job_not_resumable` | Resuming a job that is not `partial` (or `failed` with some codes) |
 
 **Image upload errors** carry a message that is safe to show to the user as is, plus structured `details` for building your own hint (for example a limits line beside the upload button):
 

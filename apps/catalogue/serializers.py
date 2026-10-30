@@ -2,6 +2,8 @@ import re
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import URLValidator, validate_email
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from apps.core.exceptions import ApiError
@@ -334,23 +336,38 @@ class RegulatoryRefWriteSerializer(serializers.ModelSerializer):
 
 class BatchSerializer(serializers.ModelSerializer):
     product_id = serializers.UUIDField(source="product.id", read_only=True)
+    product_name = serializers.CharField(source="product.display_name", read_only=True)
+    # An active batch past its best-before date reads as "expired" (computed, not stored).
+    status = serializers.CharField(source="effective_status", read_only=True)
+    declared_quantity = serializers.IntegerField(source="quantity", read_only=True)
+    issuance = serializers.SerializerMethodField()
 
     class Meta:
         model = Batch
         fields = [
-            "id", "product_id", "batch_number", "manufactured_at",
-            "expires_at", "quantity", "status", "notes",
+            "id", "product_id", "product_name", "batch_number", "manufactured_at",
+            "expires_at", "quantity", "declared_quantity", "status", "issuance", "notes",
             "created_at", "updated_at",
         ]
-        read_only_fields = ["id", "product_id", "created_at", "updated_at"]
+        read_only_fields = fields
+
+    @extend_schema_field(OpenApiTypes.OBJECT)
+    def get_issuance(self, obj):
+        # Set by the view (one grouped query for a whole page); None when not computed.
+        return getattr(obj, "_issuance", None)
 
 
 class BatchWriteSerializer(serializers.ModelSerializer):
     product_id = serializers.UUIDField(write_only=True)
+    # Alias of `quantity`, named as in the batches API requirements.
+    declared_quantity = serializers.IntegerField(source="quantity", min_value=1, required=False)
 
     class Meta:
         model = Batch
-        fields = ["product_id", "batch_number", "manufactured_at", "expires_at", "quantity", "status", "notes"]
+        fields = [
+            "product_id", "batch_number", "manufactured_at", "expires_at",
+            "quantity", "declared_quantity", "status", "notes",
+        ]
 
 
 class BulkImportJobSerializer(serializers.ModelSerializer):

@@ -1,6 +1,9 @@
 import csv
 import logging
 
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
+from django.db.models import Q
 from django.http import StreamingHttpResponse
 from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
@@ -13,7 +16,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.audit import services as audit
-from apps.catalogue.models import Batch
+from apps.catalogue.models import Batch, Product
+from apps.core.exceptions import ApiError
 from apps.core.idempotency import run_idempotent
 from apps.core.pagination import StandardPagination
 from apps.core.tenancy import get_current_tenant_id
@@ -43,6 +47,14 @@ _WRITE_PERMS = [IsAuthenticated, HasActiveTenantMembership, IsOwnerOrAdmin]
         responses={200: IssuanceJobSerializer(many=True)},
         tags=["Issuance — Jobs"],
         summary="List issuance jobs for the tenant",
+        parameters=[
+            OpenApiParameter("batch_id", OpenApiTypes.UUID, description="Only jobs for this batch"),
+            OpenApiParameter(
+                "status", OpenApiTypes.STR, many=True,
+                enum=["pending", "processing", "partial", "done", "failed"],
+                description="Filter by status (repeatable)",
+            ),
+        ],
     ),
     post=extend_schema(
         request=IssuanceJobCreateSerializer,
@@ -69,7 +81,22 @@ class IssuanceJobListCreateView(APIView):
     permission_classes = _BASE_PERMS
 
     def get(self, request):
-        jobs = IssuanceJob.objects.select_related("batch").order_by("-created_at")
+        jobs = (
+            IssuanceJob.objects.select_related("batch__product", "submitted_by")
+            .order_by("-created_at")
+        )
+        batch_id = request.query_params.get("batch_id")
+        if batch_id:
+            try:
+                jobs = jobs.filter(batch_id=batch_id)
+            except (ValueError, DjangoValidationError):
+                raise ValidationError({"batch_id": ["Must be a valid UUID."]}) from None
+        statuses = request.query_params.getlist("status")
+        if statuses:
+            unknown = set(statuses) - set(IssuanceJob.Status.values)
+            if unknown:
+                raise ValidationError({"status": [f"Unknown status: {', '.join(sorted(unknown))}."]})
+            jobs = jobs.filter(status__in=statuses)
         return Response(IssuanceJobSerializer(jobs, many=True).data)
 
     def post(self, request):
@@ -82,8 +109,7 @@ class IssuanceJobListCreateView(APIView):
         serializer.is_valid(raise_exception=True)
 
         batch = _get_batch(request.active_tenant_id, serializer.validated_data["batch_id"])
-        if batch.status != Batch.Status.ACTIVE:
-            raise ValidationError({"batch_id": "Only active batches can have codes issued."})
+        _assert_issuable(batch)
 
         tenant = request.active_membership.tenant
         if tenant.is_pharma:
@@ -120,6 +146,70 @@ class IssuanceJobDetailView(APIView):
     def get(self, request, pk):
         job = _get_job(request.active_tenant_id, pk)
         return Response(IssuanceJobSerializer(job).data)
+
+
+@extend_schema(
+    request=None,
+    responses={202: IssuanceJobSerializer},
+    tags=["Issuance — Jobs"],
+    summary="Resume a partial job: generate only the missing codes",
+    description=(
+        "Allowed when `status` is `partial`, or `failed` with some codes already generated "
+        "(otherwise `409 job_not_resumable`). Never duplicates existing codes. Calling it while the "
+        "job is already running returns the running job instead of starting a second run. "
+        "`Idempotency-Key` is optional."
+    ),
+)
+class IssuanceJobResumeView(APIView):
+    permission_classes = _WRITE_PERMS
+
+    def post(self, request, pk):
+        if "Idempotency-Key" in request.headers:
+            scope = f"{request.user.pk}:{request.active_tenant_id}:issuance.resume:{pk}"
+            return run_idempotent(request, scope=scope, handler=lambda: self._resume(request, pk))
+        return self._resume(request, pk)
+
+    def _resume(self, request, pk):
+        with transaction.atomic():
+            try:
+                job = (
+                    IssuanceJob.unscoped.select_related("batch__product", "submitted_by")
+                    .select_for_update(of=("self",))  # lock the job row only (nullable join)
+                    .get(pk=pk, tenant_id=request.active_tenant_id)
+                )
+            except IssuanceJob.DoesNotExist:
+                raise NotFound("Issuance job not found.") from None
+
+            if job.status in (IssuanceJob.Status.PROCESSING, IssuanceJob.Status.PENDING):
+                # Already running (or about to): report it, never start a second run.
+                return Response(IssuanceJobSerializer(job).data, status=status.HTTP_202_ACCEPTED)
+
+            generated = Code.unscoped.filter(issuance_job=job).count()
+            resumable = job.status == IssuanceJob.Status.PARTIAL or (
+                job.status == IssuanceJob.Status.FAILED and generated > 0
+            )
+            if not resumable:
+                raise ApiError(
+                    409, "job_not_resumable",
+                    f"A job with status '{job.status}' cannot be resumed.",
+                )
+            _assert_issuable(job.batch)
+
+            before = {"status": job.status, "generated": generated}
+            job.status = IssuanceJob.Status.PROCESSING
+            job.quantity_issued = generated
+            job.save(update_fields=["status", "quantity_issued", "updated_at"])
+            audit.record(
+                action="issuance.job.resumed",
+                actor=request.user,
+                tenant=request.active_membership.tenant,
+                target=job,
+                before=before,
+                after={"status": job.status, "remaining": job.quantity_requested - generated},
+            )
+            # Enqueue only once the status change is committed, so the worker sees PROCESSING.
+            transaction.on_commit(lambda: generate_codes.delay(str(job.pk)))
+        return Response(IssuanceJobSerializer(job).data, status=status.HTTP_202_ACCEPTED)
 
 
 @extend_schema(
@@ -191,6 +281,10 @@ def _csv_row(values: list) -> str:
             enum=["active", "deactivated"],
             description="Filter by code status",
         ),
+        OpenApiParameter(
+            "q", OpenApiTypes.STR,
+            description="Find a code by its string (full or partial, case-insensitive; dashes optional)",
+        ),
         OpenApiParameter("page", OpenApiTypes.INT, description="Page number"),
         OpenApiParameter("page_size", OpenApiTypes.INT, description="Results per page (max 100)"),
     ],
@@ -217,6 +311,11 @@ class CodeListView(APIView):
         job_id = request.query_params.get("job_id")
         if job_id:
             qs = qs.filter(issuance_job_id=job_id)
+
+        q = request.query_params.get("q", "").strip()
+        if q:
+            # Codes can contain "-" themselves, so match the text as typed or without dashes.
+            qs = qs.filter(Q(code__icontains=q) | Q(code__icontains=q.replace("-", "")))
 
         paginator = StandardPagination()
         page = paginator.paginate_queryset(qs, request)
@@ -320,7 +419,9 @@ def _require_owner_or_admin(request, view):
 
 def _get_job(tenant_id, pk):
     try:
-        return IssuanceJob.unscoped.select_related("batch").get(pk=pk, tenant_id=tenant_id)
+        return IssuanceJob.unscoped.select_related("batch__product", "submitted_by").get(
+            pk=pk, tenant_id=tenant_id
+        )
     except IssuanceJob.DoesNotExist:
         raise NotFound("Issuance job not found.") from None
 
@@ -330,6 +431,20 @@ def _get_batch(tenant_id, batch_id):
         return Batch.unscoped.select_related("product").get(pk=batch_id, tenant_id=tenant_id)
     except Batch.DoesNotExist:
         raise NotFound("Batch not found.") from None
+
+
+def _assert_issuable(batch) -> None:
+    """Codes can only be issued for an active, unexpired batch of an approved product."""
+    if batch.effective_status != Batch.Status.ACTIVE:
+        raise ApiError(
+            409, "batch_not_active",
+            f"Codes cannot be issued for a {batch.effective_status} batch.",
+        )
+    if batch.product.status != Product.Status.APPROVED:
+        raise ApiError(
+            409, "product_not_approved",
+            "Codes can only be issued once the product has been approved.",
+        )
 
 
 def _check_pharma_batch(batch) -> None:

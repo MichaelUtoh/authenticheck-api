@@ -7,11 +7,13 @@ from .views import (
     IssuanceJobDetailView,
     IssuanceJobExportView,
     IssuanceJobListCreateView,
+    IssuanceJobResumeView,
 )
 
 urlpatterns = [
     path("issuance/jobs", IssuanceJobListCreateView.as_view(), name="issuance-job-list"),
     path("issuance/jobs/<uuid:pk>", IssuanceJobDetailView.as_view(), name="issuance-job-detail"),
+    path("issuance/jobs/<uuid:pk>/resume", IssuanceJobResumeView.as_view(), name="issuance-job-resume"),
     path("issuance/jobs/<uuid:pk>/export", IssuanceJobExportView.as_view(), name="issuance-job-export"),
     path("issuance/codes", CodeListView.as_view(), name="issuance-code-list"),
     path("issuance/codes/<str:code_str>/deactivate", CodeDeactivateView.as_view(), name="code-deactivate"),

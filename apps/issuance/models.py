@@ -14,6 +14,7 @@ class IssuanceJob(TenantScopedModel):
     class Status(models.TextChoices):
         PENDING = "pending", "Pending"
         PROCESSING = "processing", "Processing"
+        PARTIAL = "partial", "Partial"  # some codes generated, some failed; resumable
         DONE = "done", "Done"
         FAILED = "failed", "Failed"
 
@@ -39,6 +40,17 @@ class IssuanceJob(TenantScopedModel):
     @property
     def is_reconciled(self) -> bool:
         return self.quantity_issued == self.quantity_requested
+
+    @property
+    def quantity_generated(self) -> int:
+        return self.quantity_issued
+
+    @property
+    def quantity_failed(self) -> int:
+        """Codes still missing from a stopped job; zero while it runs or once it is done."""
+        if self.status in (self.Status.PARTIAL, self.Status.FAILED):
+            return max(self.quantity_requested - self.quantity_issued, 0)
+        return 0
 
 
 class Code(TenantScopedModel):

@@ -1,5 +1,6 @@
 from django.core.files.storage import default_storage
 from django.db import models
+from django.utils import timezone
 
 from apps.core.models import BaseModel
 from apps.core.tenancy import TenantScopedModel
@@ -199,6 +200,11 @@ class Product(TenantScopedModel):
         ever_approved = self.approved_version > 0 or self.status == self.Status.APPROVED
         return ever_approved and not self.public_suspended
 
+    @property
+    def display_name(self) -> str:
+        """e.g. "Shea Butter Body Lotion · Unscented · 400 ml" (empty parts are skipped)."""
+        return " · ".join(p for p in (self.name, self.variant, self.size) if p)
+
     @staticmethod
     def format_size(value, unit) -> str:
         if value is None or not unit:
@@ -291,6 +297,17 @@ class Batch(TenantScopedModel):
                 name="uniq_batch_tenant_product_number",
             )
         ]
+
+    @property
+    def effective_status(self) -> str:
+        """Stored status, except an active batch past its best-before date reads as expired."""
+        if (
+            self.status == self.Status.ACTIVE
+            and self.expires_at
+            and self.expires_at < timezone.localdate()
+        ):
+            return self.Status.EXPIRED
+        return self.status
 
     def __str__(self):
         return f"{self.batch_number} ({self.product.sku})"

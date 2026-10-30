@@ -4,7 +4,7 @@ import logging
 import uuid as _uuid
 from io import BytesIO
 
-from django.core.exceptions import ImproperlyConfigured
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.db import IntegrityError, transaction
@@ -27,6 +27,7 @@ from apps.core.exceptions import ApiError
 from apps.core.pagination import StandardPagination
 from apps.core.tenancy import tenant_context
 from apps.issuance.models import Code
+from apps.issuance.summary import issuance_counts
 from apps.tenants.permissions import (
     CanEditCatalogue,
     CanSubmitProducts,
@@ -546,7 +547,7 @@ class ProductActivityView(APIView):
             if event.actor:
                 actor = {
                     "id": str(event.actor_id),
-                    "name": event.actor.get_full_name() or event.actor.email,
+                    "name": event.actor.full_name or event.actor.email,
                 }
             results.append({
                 "at": event.occurred_at,
@@ -706,7 +707,10 @@ class BatchListCreateView(APIView):
 
     def get(self, request, product_pk):
         product = _get_product(request.active_tenant_id, product_pk)
-        batches = Batch.objects.filter(product=product).order_by("-created_at")
+        batches = list(
+            Batch.objects.filter(product=product).select_related("product").order_by("-created_at")
+        )
+        _attach_issuance(batches)
         return Response(BatchSerializer(batches, many=True).data)
 
     def post(self, request, product_pk):
@@ -729,6 +733,7 @@ class BatchListCreateView(APIView):
             target=batch,
             after={"batch_number": batch.batch_number, "quantity": batch.quantity},
         )
+        _attach_issuance([batch])
         return Response(BatchSerializer(batch).data, status=status.HTTP_201_CREATED)
 
 
@@ -750,6 +755,7 @@ class BatchDetailView(APIView):
 
     def get(self, request, product_pk, pk):
         batch = _get_batch(request.active_tenant_id, product_pk, pk)
+        _attach_issuance([batch])
         return Response(BatchSerializer(batch).data)
 
     def patch(self, request, product_pk, pk):
@@ -770,6 +776,105 @@ class BatchDetailView(APIView):
             before=before,
             after={"batch_number": batch.batch_number, "status": batch.status, "quantity": batch.quantity},
         )
+        _attach_issuance([batch])
+        return Response(BatchSerializer(batch).data)
+
+
+# ---------------------------------------------------------------------------
+# Batches across all products
+# ---------------------------------------------------------------------------
+
+_BATCH_ORDERINGS = {
+    "-created_at": "-created_at",
+    "created_at": "created_at",
+    "batch_number": "batch_number",
+    "-batch_number": "-batch_number",
+    "best_before": "expires_at",
+    "-best_before": "-expires_at",
+}
+
+
+@extend_schema(
+    responses={200: BatchSerializer(many=True)},
+    tags=["Catalogue — Batches"],
+    summary="List batches across all products",
+    parameters=[
+        OpenApiParameter("q", OpenApiTypes.STR, description="Batch number or product name (partial)"),
+        OpenApiParameter(
+            "status", OpenApiTypes.STR, many=True, enum=["active", "recalled", "expired"],
+            description="Filter by status (repeatable). `expired` includes active batches past best-before",
+        ),
+        OpenApiParameter("product_id", OpenApiTypes.UUID, description="Only this product's batches"),
+        OpenApiParameter(
+            "ordering", OpenApiTypes.STR,
+            description="-created_at (default) | created_at | batch_number | -batch_number | best_before | -best_before",
+        ),
+        OpenApiParameter("page", OpenApiTypes.INT, description="Page number"),
+        OpenApiParameter("page_size", OpenApiTypes.INT, description="Results per page (max 100, default 25)"),
+    ],
+)
+class BatchGlobalListView(APIView):
+    permission_classes = _BASE_PERMS
+
+    def get(self, request):
+        qs = Batch.objects.select_related("product")
+
+        q = request.query_params.get("q", "").strip()
+        if q:
+            qs = qs.filter(Q(batch_number__icontains=q) | Q(product__name__icontains=q))
+
+        product_id = request.query_params.get("product_id")
+        if product_id:
+            try:
+                qs = qs.filter(product_id=product_id)
+            except (ValueError, DjangoValidationError):
+                raise ValidationError({"product_id": ["Must be a valid UUID."]}) from None
+
+        statuses = request.query_params.getlist("status")
+        if statuses:
+            unknown = set(statuses) - {"active", "recalled", "expired"}
+            if unknown:
+                raise ValidationError({"status": [f"Unknown status: {', '.join(sorted(unknown))}."]})
+            today = timezone.localdate()
+            past_best_before = Q(expires_at__lt=today)
+            cond = Q()
+            if "active" in statuses:
+                cond |= Q(status=Batch.Status.ACTIVE) & ~past_best_before
+            if "recalled" in statuses:
+                cond |= Q(status=Batch.Status.RECALLED)
+            if "expired" in statuses:
+                cond |= Q(status=Batch.Status.EXPIRED) | (
+                    Q(status=Batch.Status.ACTIVE) & past_best_before
+                )
+            qs = qs.filter(cond)
+
+        ordering = request.query_params.get("ordering", "-created_at")
+        if ordering not in _BATCH_ORDERINGS:
+            raise ValidationError({"ordering": [f"Use one of: {', '.join(_BATCH_ORDERINGS)}."]})
+        qs = qs.order_by(_BATCH_ORDERINGS[ordering], "-created_at", "pk")
+
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(qs, request)
+        _attach_issuance(page)
+        return paginator.get_paginated_response(BatchSerializer(page, many=True).data)
+
+
+@extend_schema(
+    responses={200: BatchSerializer},
+    tags=["Catalogue — Batches"],
+    summary="Retrieve a batch by id (no product id needed)",
+)
+class BatchGlobalDetailView(APIView):
+    permission_classes = _BASE_PERMS
+
+    def get(self, request, pk):
+        try:
+            batch = Batch.unscoped.select_related("product").get(
+                pk=pk, tenant_id=request.active_tenant_id
+            )
+        except Batch.DoesNotExist:
+            raise NotFound("Batch not found.") from None
+        _attach_issuance([batch])
         return Response(BatchSerializer(batch).data)
 
 
@@ -921,6 +1026,14 @@ def _get_product(tenant_id, product_id):
         return Product.unscoped.select_related("brand", "tenant").get(pk=product_id, tenant_id=tenant_id)
     except Product.DoesNotExist:
         raise NotFound("Product not found.") from None
+
+
+def _attach_issuance(batches) -> None:
+    """Attach per-batch issuance counts (one grouped query for the whole list)."""
+    batches = list(batches)
+    counts = issuance_counts(b.pk for b in batches)
+    for batch in batches:
+        batch._issuance = counts[batch.pk]
 
 
 def _get_batch(tenant_id, product_id, batch_id):
