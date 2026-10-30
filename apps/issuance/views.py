@@ -15,6 +15,7 @@ from rest_framework.views import APIView
 from apps.audit import services as audit
 from apps.catalogue.models import Batch
 from apps.core.idempotency import run_idempotent
+from apps.core.pagination import StandardPagination
 from apps.core.tenancy import get_current_tenant_id
 from apps.tenants.permissions import HasActiveTenantMembership, IsOwnerOrAdmin
 
@@ -190,10 +191,12 @@ def _csv_row(values: list) -> str:
             enum=["active", "deactivated"],
             description="Filter by code status",
         ),
+        OpenApiParameter("page", OpenApiTypes.INT, description="Page number"),
+        OpenApiParameter("page_size", OpenApiTypes.INT, description="Results per page (max 100)"),
     ],
     responses={200: CodeSerializer(many=True)},
     tags=["Issuance — Codes"],
-    summary="List codes for the tenant (max 500)",
+    summary="List codes for the tenant",
 )
 class CodeListView(APIView):
     """List codes for the active tenant, with optional filters."""
@@ -215,7 +218,9 @@ class CodeListView(APIView):
         if job_id:
             qs = qs.filter(issuance_job_id=job_id)
 
-        return Response(CodeSerializer(qs[:500], many=True).data)
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(qs, request)
+        return paginator.get_paginated_response(CodeSerializer(page, many=True).data)
 
 
 @extend_schema(

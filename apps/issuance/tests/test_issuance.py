@@ -239,13 +239,14 @@ def test_export_unavailable_for_pending_job(client, owner, tenant, batch):
 def test_code_list_returns_tenant_codes(client, done_job):
     response = client.get("/api/v1/issuance/codes")
     assert response.status_code == 200
-    assert len(response.data) == 5
+    assert response.data["count"] == 5
+    assert len(response.data["results"]) == 5
 
 
 def test_code_list_filters_by_batch(client, done_job, batch):
     response = client.get(f"/api/v1/issuance/codes?batch_id={batch.pk}")
     assert response.status_code == 200
-    assert len(response.data) == 5
+    assert response.data["count"] == 5
 
 
 def test_code_list_filters_by_status(client, done_job, tenant):
@@ -256,13 +257,13 @@ def test_code_list_filters_by_status(client, done_job, tenant):
 
     response = client.get("/api/v1/issuance/codes?status=deactivated")
     assert response.status_code == 200
-    assert len(response.data) == 1
+    assert response.data["count"] == 1
 
 
 def test_code_list_filters_by_job(client, done_job):
     response = client.get(f"/api/v1/issuance/codes?job_id={done_job.pk}")
     assert response.status_code == 200
-    assert len(response.data) == 5
+    assert response.data["count"] == 5
 
 
 # ---------------------------------------------------------------------------
@@ -383,5 +384,5 @@ def test_codes_from_other_tenant_not_visible(client, done_job):
 
     response = client.get("/api/v1/issuance/codes")
     assert response.status_code == 200
-    codes = [c["code"] for c in response.data]
+    codes = [c["code"] for c in response.data["results"]]
     assert not any(c.startswith("othercode") for c in codes)
