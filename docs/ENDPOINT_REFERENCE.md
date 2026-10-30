@@ -129,8 +129,8 @@ Lifecycle: `draft → in_review → approved | changes_requested | rejected`. Pr
 | `GET` | `/catalogue/products/{id}/activity` | 🏢 | Per-product audit history (last 100 events, with `before` / `after`) |
 | `GET` | `/catalogue/products/{id}/consumer-preview` | 🏢 | Exactly what `/verify` would show (last approved values) |
 | `GET` | `/catalogue/industries` | 🏢 | Industries, required fields and active categories (with `allowed_units`). Platform-managed; do not hard-code |
-| `POST` | `/catalogue/images` | ✏️ | Upload a reference image (`multipart/form-data`, field `file`; PNG/JPEG, max 5 MB, EXIF stripped) |
-| `DELETE` | `/catalogue/images/{id}` | ✏️ | Remove an uploaded image |
+| `POST` | `/catalogue/images` | ✏️ | Upload a reference image (`multipart/form-data`, field `file`). PNG/JPEG by content, max 5 MB, 400–4000 px per side. Returns `id`, `url` (display image, longest side ≤ 1600 px) and `thumbnail_url` (≤ 320 px). EXIF/GPS stripped, orientation applied; PNGs with transparency stay PNG, everything else becomes JPEG. Unattached uploads are deleted after 24 h |
+| `DELETE` | `/catalogue/images/{id}` | ✏️ | Delete an unused image and its files. `409 image_in_use` while a product or pending revision references it; replace it on the product instead |
 | `GET` | `/catalogue/products/{product_id}/regulatory-refs` | 🏢 | List regulatory references (includes `source`, `verification_status`) |
 | `POST` | `/catalogue/products/{product_id}/regulatory-refs` | ✏️ | Add a regulatory reference. Verification is staff-only |
 
@@ -138,7 +138,7 @@ Lifecycle: `draft → in_review → approved | changes_requested | rejected`. Pr
 `variant`, `size_value` + `size_unit` (`ml`, `L`, `g`, `kg`, `mg`, `units`), `size` (read-only, generated,
 e.g. `"400 ml"`), `pack_configuration`, `dosage_form`, `strength`, `category` (slug from
 `/catalogue/industries`), `sku`, `gtin` (optional), `consumer_visibility`, `support_contact`
-(`{email, phone, url}` override), `reference_image_id`, `regulatory_reference` (nested, write-only),
+(`{email, phone, url}` override), `reference_image_id` (read-back also includes `reference_image` with `url` / `thumbnail_url`), `regulatory_reference` (nested, write-only),
 `confirm_not_duplicate` (write-only). Read-only: `status`, `approved_version`, `pending_revision`,
 `public_suspended`, `review_note`, `correction_request`, `gtin_conflict` (detail only).
 
@@ -291,6 +291,22 @@ are not yet approved, or are suspended by staff, return `404 not_found`.
 | 409 | `product_not_editable` | Editing a product that is `in_review` |
 | 409 | `field_locked` | Changing `industry` after creation, or `sku` / `gtin` after approval |
 | 409 | `gtin_conflict` | Approving a product whose GTIN is registered against another product |
+| 409 | `image_in_use` | Deleting an image a product still references |
+
+**Image upload errors** carry a message that is safe to show to the user as is, plus structured `details` for building your own hint (for example a limits line beside the upload button):
+
+```json
+{ "error": {
+    "code": "file_too_large",
+    "message": "This image is 7.0 MB, which is over the 5.0 MB limit. Please compress it or save a smaller version, then upload it again.",
+    "details": {
+      "received_bytes": 7340032,
+      "limits": { "max_bytes": 5242880, "min_side_px": 400, "max_side_px": 4000,
+                  "accepted_types": ["image/png", "image/jpeg"] }
+    } } }
+```
+
+`image_invalid` adds `details.reason` (`too_small`, `too_large` or `unreadable`) and, for size problems, `received_width_px` / `received_height_px`.
 | 413 / 415 / 422 | `file_too_large` / `unsupported_media_type` / `image_invalid` | Image upload |
 
 ---
