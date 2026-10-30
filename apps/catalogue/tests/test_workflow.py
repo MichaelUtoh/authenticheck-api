@@ -139,6 +139,16 @@ def test_size_unit_must_suit_category(client, brand):
     assert "size_unit" in resp.data["error"]["details"]
 
 
+@pytest.mark.parametrize("field,value", [
+    ("pack_configuration", "1 bottle"),
+    ("support_contact", "support@example.com"),
+])
+def test_object_fields_reject_strings(client, brand, field, value):
+    resp = client.post(f"{API}/catalogue/products", body(brand, **{field: value}), format="json")
+    assert resp.status_code == 400
+    assert "must be an object" in str(resp.data["error"]["details"][field]).lower()
+
+
 def test_unknown_category_rejected(client, brand):
     resp = client.post(f"{API}/catalogue/products", body(brand, category="nonsense"), format="json")
     assert resp.status_code == 400

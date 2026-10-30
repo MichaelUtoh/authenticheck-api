@@ -202,6 +202,10 @@ class ProductWriteSerializer(serializers.ModelSerializer):
         return value
 
     def validate_pack_configuration(self, value):
+        if value and not isinstance(value, dict):
+            raise serializers.ValidationError(
+                'Must be an object, e.g. {"packs": 1, "per_pack": 10, "unit": "tablets"}.'
+            )
         if value:
             for key in ("packs", "per_pack"):
                 if key in value and not (isinstance(value[key], int) and value[key] > 0):
@@ -218,6 +222,10 @@ class ProductWriteSerializer(serializers.ModelSerializer):
     def validate_support_contact(self, value):
         if value is None:
             return None
+        if not isinstance(value, dict):
+            raise serializers.ValidationError(
+                'Must be an object, e.g. {"email": "support@example.com"}.'
+            )
         unknown = set(value) - {"email", "phone", "url"}
         if unknown:
             raise serializers.ValidationError(f"Unknown keys: {', '.join(sorted(unknown))}.")
