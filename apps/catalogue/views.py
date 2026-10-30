@@ -7,7 +7,7 @@ from io import BytesIO
 from django.core.exceptions import ImproperlyConfigured
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.db.models import Count, Q
 from django.utils import timezone
 from django.utils.text import slugify
@@ -34,7 +34,7 @@ from apps.tenants.permissions import (
     IsOwnerOrAdmin,
 )
 
-from . import workflow
+from . import images, workflow
 from .models import (
     Batch,
     Brand,
@@ -63,11 +63,6 @@ logger = logging.getLogger(__name__)
 
 _BASE_PERMS = [IsAuthenticated, HasActiveTenantMembership]
 _WRITE_PERMS = [IsAuthenticated, HasActiveTenantMembership, IsOwnerOrAdmin]
-
-# Magic bytes for image type detection
-_PNG_MAGIC = b"\x89PNG"
-_JPEG_MAGIC = b"\xff\xd8\xff"
-_MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +208,7 @@ class ProductListCreateView(APIView):
     permission_classes = _BASE_PERMS
 
     def get(self, request):
-        qs = Product.objects.select_related("brand").order_by("-updated_at")
+        qs = Product.objects.select_related("brand", "reference_image").order_by("-updated_at")
 
         q = request.query_params.get("q")
         if q:
@@ -580,69 +575,33 @@ class ProductImageUploadView(APIView):
     def post(self, request):
         _require_catalogue_editor(request, self)
 
-        try:
-            from PIL import Image as PilImage
-        except ImportError:
-            raise ImproperlyConfigured("Pillow is required for image upload. Add Pillow to requirements.")
-
         uploaded = request.FILES.get("file")
         if not uploaded:
-            raise ValidationError({"file": "An image file is required."})
-
-        if uploaded.size > _MAX_IMAGE_BYTES:
-            return Response(
-                {"error": {"code": "file_too_large", "message": "Image must be under 5 MB."}},
-                status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            )
-
-        header = uploaded.read(16)
-        uploaded.seek(0)
-        if header[:4] == _PNG_MAGIC:
-            fmt = "PNG"
-            ext = "png"
-        elif header[:3] == _JPEG_MAGIC:
-            fmt = "JPEG"
-            ext = "jpg"
-        else:
-            return Response(
-                {"error": {"code": "unsupported_media_type", "message": "Only PNG and JPEG images are accepted."}},
-                status=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            )
-
+            raise ValidationError({"file": ["Choose an image to upload."]})
         try:
-            img = PilImage.open(uploaded)
-            img.verify()
-            uploaded.seek(0)
-            img = PilImage.open(uploaded)
-            width, height = img.size
-            if min(width, height) < 400 or max(width, height) > 4000:
-                return Response(
-                    {"error": {"code": "image_invalid", "message": "Image must be between 400 and 4000 pixels on each side."}},
-                    status=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                )
-            # Strip EXIF by re-encoding
-            buf = BytesIO()
-            img = img.convert("RGB")
-            img.save(buf, "JPEG", quality=90)
-            buf.seek(0)
-            width, height = img.size
-            ext = "jpg"
-        except Exception:
-            return Response(
-                {"error": {"code": "image_invalid", "message": "Could not process image."}},
-                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            )
+            processed = images.process_upload(uploaded)
+        except images.ImageRejected as exc:
+            raise ApiError(exc.status, exc.code, exc.message, exc.details) from None
 
-        filename = f"catalogue/images/{_uuid.uuid4().hex}.{ext}"
-        saved_path = default_storage.save(filename, ContentFile(buf.read()))
-        image_url = default_storage.url(saved_path)
+        tenant = request.active_membership.tenant
+        stem = f"tenants/{tenant.pk}/images/{_uuid.uuid4().hex}"
+        main_path = default_storage.save(f"{stem}.{processed.ext}", ContentFile(processed.main))
+        try:
+            thumb_path = default_storage.save(
+                f"{stem}_thumb.{processed.ext}", ContentFile(processed.thumbnail)
+            )
+        except Exception:
+            default_storage.delete(main_path)
+            raise
 
         image = ProductImage.objects.create(
-            tenant=request.active_membership.tenant,
-            url=image_url,
-            width=width,
-            height=height,
-            original_filename=uploaded.name,
+            tenant=tenant,
+            storage_path=main_path,
+            thumbnail_path=thumb_path,
+            width=processed.width,
+            height=processed.height,
+            size_bytes=len(processed.main),
+            original_filename=uploaded.name[:255],
             uploaded_by=request.user,
         )
         return Response(ProductImageSerializer(image).data, status=status.HTTP_201_CREATED)
@@ -651,7 +610,12 @@ class ProductImageUploadView(APIView):
 @extend_schema(
     responses={204: None},
     tags=["Catalogue — Images"],
-    summary="Delete a reference image",
+    summary="Delete an unused reference image",
+    description=(
+        "Returns 409 `image_in_use` while a product (or a pending revision) references the image. "
+        "Replace the image on the product instead; the old file is removed automatically once "
+        "nothing references it."
+    ),
 )
 class ProductImageDeleteView(APIView):
     permission_classes = _BASE_PERMS
@@ -661,7 +625,13 @@ class ProductImageDeleteView(APIView):
         try:
             image = ProductImage.objects.get(pk=pk)
         except ProductImage.DoesNotExist:
-            raise NotFound("Image not found.")
+            raise NotFound("Image not found.") from None
+        if workflow.image_in_use(image):
+            raise ApiError(
+                409, "image_in_use",
+                "This image is used by a product. Replace it on the product first.",
+            )
+        transaction.on_commit(image.delete_files)  # never remove files if the request rolls back
         image.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 

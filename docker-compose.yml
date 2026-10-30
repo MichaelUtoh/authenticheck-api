@@ -48,5 +48,20 @@ services:
       db: { condition: service_healthy }
       redis: { condition: service_started }
 
+  beat:
+    build:
+      context: .
+      args: { REQUIREMENTS: dev }
+    command: celery -A config beat -l info
+    env_file: .env
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.local
+      DATABASE_URL: postgres://authenticheck:authenticheck@db:5432/authenticheck
+      REDIS_URL: redis://redis:6379/0
+    volumes: [".:/app"]
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_started }
+
 volumes:
   pgdata:

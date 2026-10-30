@@ -1,3 +1,4 @@
+from django.core.files.storage import default_storage
 from django.db import models
 
 from apps.core.models import BaseModel
@@ -76,11 +77,14 @@ class Brand(TenantScopedModel):
 
 
 class ProductImage(TenantScopedModel):
-    """A reference image uploaded for a product."""
+    """A reference image uploaded for a product. Only storage paths are stored; URLs are built
+    from the configured storage/CDN at read time, so changing the CDN host needs no data change."""
 
-    url = models.URLField(max_length=500)
+    storage_path = models.CharField(max_length=500)
+    thumbnail_path = models.CharField(max_length=500, blank=True)
     width = models.PositiveIntegerField(null=True, blank=True)
     height = models.PositiveIntegerField(null=True, blank=True)
+    size_bytes = models.PositiveIntegerField(default=0)
     original_filename = models.CharField(max_length=255, blank=True)
     uploaded_by = models.ForeignKey(
         "accounts.User", on_delete=models.SET_NULL, null=True, related_name="+"
@@ -88,6 +92,19 @@ class ProductImage(TenantScopedModel):
 
     def __str__(self):
         return self.original_filename or str(self.pk)
+
+    @property
+    def url(self) -> str:
+        return default_storage.url(self.storage_path)
+
+    @property
+    def thumbnail_url(self) -> str:
+        return default_storage.url(self.thumbnail_path) if self.thumbnail_path else self.url
+
+    def delete_files(self) -> None:
+        for path in (self.storage_path, self.thumbnail_path):
+            if path:
+                default_storage.delete(path)
 
 
 class Product(TenantScopedModel):

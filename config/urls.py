@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.contrib import admin
+from django.conf.urls.static import static
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
@@ -31,3 +32,7 @@ if settings.API_DOCS_ENABLED:
         path("api/v1/schema/", SpectacularAPIView.as_view(), name="schema"),
         path("api/v1/docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="docs"),
     ]
+
+if settings.DEBUG and not settings.MEDIA_BUCKET:
+    # Local development only; production serves media from object storage behind a CDN.
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

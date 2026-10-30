@@ -13,6 +13,13 @@ os.environ.setdefault(
 from .base import *  # noqa: E402
 
 DEBUG = False
+
+# Tests must never touch a real bucket, whatever .env says: always use local disk.
+MEDIA_BUCKET = ""
+STORAGES = {
+    **STORAGES,
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+}
 ALLOWED_HOSTS = ["testserver", "localhost"]
 API_DOCS_ENABLED = True
 

@@ -105,7 +105,10 @@ class VerifyView(APIView):
             payload["support_contact"] = consumer["support_contact"]
 
         if vis.get("product_image", True) and product.reference_image_id:
-            payload["product_image"] = {"url": product.reference_image.url}
+            payload["product_image"] = {
+                "url": product.reference_image.url,
+                "thumbnail_url": product.reference_image.thumbnail_url,
+            }
 
         if vis.get("regulatory_reference", True) and getattr(code.tenant, "is_pharma", False):
             payload["regulatory_refs"] = list(

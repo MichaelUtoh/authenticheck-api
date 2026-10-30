@@ -163,6 +163,42 @@ STORAGES = {
     "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
 }
 
+# --- Media (uploaded product images) --------------------------------------------------------
+# Production: set MEDIA_BUCKET to use any S3-compatible store (AWS S3, Cloudflare R2, MinIO) and
+# MEDIA_CDN_DOMAIN to the CDN host in front of it. Local dev falls back to MEDIA_ROOT on disk,
+# served by the dev server; set MEDIA_URL to an absolute URL (http://localhost:8000/media/) so
+# clients on another origin can load it. Never rely on local disk in production: it is ephemeral
+# and not shared between instances.
+MEDIA_ROOT = BASE_DIR / "media"
+MEDIA_URL = env("MEDIA_URL", default="/media/")
+MEDIA_BUCKET = env("MEDIA_BUCKET", default="")
+if MEDIA_BUCKET:
+    STORAGES["default"] = {
+        "BACKEND": "storages.backends.s3.S3Storage",
+        "OPTIONS": {
+            "bucket_name": MEDIA_BUCKET,
+            "endpoint_url": env("MEDIA_ENDPOINT_URL", default=None),
+            "region_name": env("MEDIA_REGION", default=None),
+            "access_key": env("MEDIA_ACCESS_KEY_ID", default=None),
+            "secret_key": env("MEDIA_SECRET_ACCESS_KEY", default=None),
+            "custom_domain": env("MEDIA_CDN_DOMAIN", default=None),
+            "default_acl": None,  # bucket stays private; the CDN reads it
+            "querystring_auth": False,
+            "file_overwrite": False,
+            # Object names are random UUIDs and never reused, so they can be cached forever.
+            "object_parameters": {"CacheControl": "public, max-age=31536000, immutable"},
+        },
+    }
+
+# Uploaded images that no product references are deleted after this many hours.
+UNATTACHED_IMAGE_TTL_HOURS = env.int("UNATTACHED_IMAGE_TTL_HOURS", default=24)
+CELERY_BEAT_SCHEDULE = {
+    "cleanup-unattached-product-images": {
+        "task": "apps.catalogue.tasks.cleanup_unattached_images",
+        "schedule": 3600.0,
+    },
+}
+
 # --- DRF ------------------------------------------------------------------------------------
 REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",

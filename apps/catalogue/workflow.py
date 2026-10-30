@@ -137,6 +137,16 @@ def gtin_conflicts(product: Product):
     return Product.unscoped.filter(gtin=product.gtin).exclude(pk=product.pk)
 
 
+def image_in_use(image: ProductImage) -> bool:
+    """True while any product, or any pending revision awaiting review, references the image."""
+    return (
+        Product.unscoped.filter(reference_image=image).exists()
+        or Product.unscoped.filter(
+            tenant_id=image.tenant_id, pending_revision__reference_image_id=str(image.pk)
+        ).exists()
+    )
+
+
 def resolve_image(tenant_id, image_id):
     if not image_id:
         return None

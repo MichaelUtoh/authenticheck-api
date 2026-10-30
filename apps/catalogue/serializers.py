@@ -27,16 +27,23 @@ class BrandWriteSerializer(serializers.ModelSerializer):
 
 
 class ProductImageSerializer(serializers.ModelSerializer):
+    url = serializers.CharField(read_only=True)
+    thumbnail_url = serializers.CharField(read_only=True)
+
     class Meta:
         model = ProductImage
-        fields = ["id", "url", "width", "height", "original_filename", "created_at"]
-        read_only_fields = ["id", "url", "width", "height", "original_filename", "created_at"]
+        fields = [
+            "id", "url", "thumbnail_url", "width", "height", "size_bytes",
+            "original_filename", "created_at",
+        ]
+        read_only_fields = fields
 
 
 class ProductSerializer(serializers.ModelSerializer):
     brand_id = serializers.UUIDField(source="brand.id", read_only=True)
     brand_name = serializers.SerializerMethodField()
     reference_image_id = serializers.SerializerMethodField()
+    reference_image = serializers.SerializerMethodField()
     batch_count = serializers.SerializerMethodField()
     active_batch_count = serializers.SerializerMethodField()
     codes_issued = serializers.SerializerMethodField()
@@ -74,6 +81,7 @@ class ProductSerializer(serializers.ModelSerializer):
             "submitted_at",
             "reviewed_at",
             "reference_image_id",
+            "reference_image",
             "batch_count",
             "active_batch_count",
             "codes_issued",
@@ -82,7 +90,7 @@ class ProductSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "id", "brand_id", "brand_name", "status", "is_active", "review_note",
-            "submitted_at", "reviewed_at", "reference_image_id",
+            "submitted_at", "reviewed_at", "reference_image_id", "reference_image",
             "batch_count", "active_batch_count", "codes_issued",
             "size", "approved_version", "pending_revision", "public_suspended",
             "correction_request", "gtin_conflict",
@@ -98,6 +106,12 @@ class ProductSerializer(serializers.ModelSerializer):
 
     def get_reference_image_id(self, obj):
         return str(obj.reference_image_id) if obj.reference_image_id else None
+
+    def get_reference_image(self, obj):
+        image = obj.reference_image
+        if image is None:
+            return None
+        return {"id": str(image.pk), "url": image.url, "thumbnail_url": image.thumbnail_url}
 
     def get_batch_count(self, obj):
         return getattr(obj, "_batch_count", None)

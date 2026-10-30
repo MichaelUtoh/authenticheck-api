@@ -22,7 +22,8 @@ class ManufacturerInfoSerializer(serializers.Serializer):
 
 
 class ProductImageInfoSerializer(serializers.Serializer):
-    url = serializers.URLField()
+    url = serializers.CharField()
+    thumbnail_url = serializers.CharField(required=False)
 
 
 class VerifyGenuineSerializer(serializers.Serializer):

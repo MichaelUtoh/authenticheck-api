@@ -179,3 +179,29 @@ def _import_batches(job, csv_content: str):
                 errors.append({"row": i, "error": str(exc)})
 
     return len(rows), rows_imported, rows_failed, errors
+
+
+@shared_task(acks_late=True)
+def cleanup_unattached_images(batch_size: int = 500) -> int:
+    """Delete uploads that no product (or pending revision) references once they are older than
+    UNATTACHED_IMAGE_TTL_HOURS. Files are removed only after the row delete commits."""
+    from datetime import timedelta
+
+    from django.conf import settings
+    from django.utils import timezone
+
+    from . import workflow
+    from .models import ProductImage
+
+    cutoff = timezone.now() - timedelta(hours=settings.UNATTACHED_IMAGE_TTL_HOURS)
+    removed = 0
+    for image in ProductImage.unscoped.filter(created_at__lt=cutoff).order_by("created_at")[:batch_size]:
+        if workflow.image_in_use(image):
+            continue
+        with transaction.atomic():
+            transaction.on_commit(image.delete_files)
+            image.delete()
+        removed += 1
+    if removed:
+        logger.info("Removed %d unattached product images", removed)
+    return removed
