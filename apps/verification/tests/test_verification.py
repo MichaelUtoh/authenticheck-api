@@ -31,7 +31,8 @@ def batch(tenant):
     with tenant_context(tenant.pk):
         brand = Brand.objects.create(tenant=tenant, name="VerifyBrand", slug="verifybrand")
         product = Product.objects.create(
-            tenant=tenant, brand=brand, name="Verify Product", sku="VRF-001"
+            tenant=tenant, brand=brand, name="Verify Product", sku="VRF-001",
+            status=Product.Status.APPROVED, approved_version=1,
         )
         return Batch.objects.create(
             tenant=tenant,

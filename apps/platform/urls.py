@@ -1,6 +1,17 @@
 from django.urls import path
 
 from .views import (
+    PlatformCategoryDetailView,
+    PlatformCategoryListView,
+    PlatformIndustryDetailView,
+    PlatformIndustryListView,
+    PlatformProductApproveView,
+    PlatformProductCorrectView,
+    PlatformProductListView,
+    PlatformProductRejectView,
+    PlatformProductRequestChangesView,
+    PlatformProductSuspendView,
+    PlatformProductUnsuspendView,
     PlatformAuditLogView,
     PlatformFlagListView,
     PlatformTenantDetailView,
@@ -22,4 +33,15 @@ urlpatterns = [
         RegulatoryRefVerifyView.as_view(),
         name="platform-regulatory-ref-verify",
     ),
+    path("platform/products", PlatformProductListView.as_view(), name="platform-product-list"),
+    path("platform/products/<uuid:product_id>/approve", PlatformProductApproveView.as_view(), name="platform-product-approve"),
+    path("platform/products/<uuid:product_id>/request-changes", PlatformProductRequestChangesView.as_view(), name="platform-product-request-changes"),
+    path("platform/products/<uuid:product_id>/reject", PlatformProductRejectView.as_view(), name="platform-product-reject"),
+    path("platform/products/<uuid:product_id>/suspend", PlatformProductSuspendView.as_view(), name="platform-product-suspend"),
+    path("platform/products/<uuid:product_id>/unsuspend", PlatformProductUnsuspendView.as_view(), name="platform-product-unsuspend"),
+    path("platform/products/<uuid:product_id>/correct", PlatformProductCorrectView.as_view(), name="platform-product-correct"),
+    path("platform/industries", PlatformIndustryListView.as_view(), name="platform-industry-list"),
+    path("platform/industries/<uuid:pk>", PlatformIndustryDetailView.as_view(), name="platform-industry-detail"),
+    path("platform/categories", PlatformCategoryListView.as_view(), name="platform-category-list"),
+    path("platform/categories/<uuid:pk>", PlatformCategoryDetailView.as_view(), name="platform-category-detail"),
 ]

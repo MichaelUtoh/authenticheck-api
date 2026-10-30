@@ -23,12 +23,28 @@ from rest_framework.views import APIView
 
 from apps.audit import services as audit
 from apps.audit.models import AuditEvent
+from apps.core.exceptions import ApiError
 from apps.core.pagination import StandardPagination
 from apps.core.tenancy import tenant_context
 from apps.issuance.models import Code
-from apps.tenants.permissions import HasActiveTenantMembership, IsOwnerOrAdmin
+from apps.tenants.permissions import (
+    CanEditCatalogue,
+    CanSubmitProducts,
+    HasActiveTenantMembership,
+    IsOwnerOrAdmin,
+)
 
-from .models import Batch, Brand, BulkImportJob, Product, ProductImage, RegulatoryRef
+from . import workflow
+from .models import (
+    Batch,
+    Brand,
+    BulkImportJob,
+    Category,
+    Industry,
+    Product,
+    ProductImage,
+    RegulatoryRef,
+)
 from .serializers import (
     BatchSerializer,
     BatchWriteSerializer,
@@ -233,24 +249,31 @@ class ProductListCreateView(APIView):
         return paginator.get_paginated_response(ProductSerializer(page, many=True).data)
 
     def post(self, request):
-        _require_owner_or_admin(request, self)
+        _require_catalogue_editor(request, self)
         serializer = ProductWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        tenant = request.active_membership.tenant
 
-        reg_ref_data = serializer.validated_data.pop("regulatory_reference", None)
-        brand_id = serializer.validated_data.pop("brand_id")
-        brand = _get_brand(request.active_tenant_id, brand_id)
+        reg_ref_data = data.pop("regulatory_reference", None)
+        confirmed = data.pop("confirm_not_duplicate", False)
+        brand = workflow.resolve_brand(tenant.pk, data.pop("brand_id"))
+        image = workflow.resolve_image(tenant.pk, data.pop("reference_image_id", None))
+        workflow.guard_industry(data.get("industry", ""))
+
+        if data.get("sku"):
+            workflow.check_sku_conflict(tenant.pk, data["sku"])
+        if not confirmed and data.get("name"):
+            workflow.check_possible_duplicate(
+                tenant.pk, brand.pk, data["name"], data.get("variant", ""),
+                data.get("size_value"), data.get("size_unit", ""),
+            )
 
         product = Product(
-            tenant=request.active_membership.tenant,
-            brand=brand,
-            status=Product.Status.DRAFT,
-            **serializer.validated_data,
+            tenant=tenant, brand=brand, reference_image=image,
+            status=Product.Status.DRAFT, **data,
         )
-        try:
-            product.save()
-        except IntegrityError:
-            raise ValidationError({"sku": "A product with this SKU already exists."})
+        workflow.save_product(product)
 
         if reg_ref_data:
             _create_regulatory_ref(product, reg_ref_data, request)
@@ -258,9 +281,9 @@ class ProductListCreateView(APIView):
         audit.record(
             action="catalogue.product.created",
             actor=request.user,
-            tenant=request.active_membership.tenant,
+            tenant=tenant,
             target=product,
-            after={"sku": product.sku, "name": product.name, "status": product.status},
+            after=workflow.snapshot(product),
         )
         return Response(ProductSerializer(product).data, status=status.HTTP_201_CREATED)
 
@@ -286,77 +309,77 @@ class ProductDetailView(APIView):
         product._batch_count = product.batches.count()
         product._active_batch_count = product.batches.filter(status=Batch.Status.ACTIVE).count()
         product._codes_issued = Code.unscoped.filter(batch__product=product).count()
+        product._gtin_conflict = workflow.gtin_conflicts(product).exists()
         return Response(ProductSerializer(product).data)
 
     def patch(self, request, pk):
-        _require_owner_or_admin(request, self)
+        _require_catalogue_editor(request, self)
         product = _get_product(request.active_tenant_id, pk)
-        if product.status == Product.Status.IN_REVIEW:
-            raise ValidationError(
-                {"status": "Products under review cannot be edited."},
-                code="product_not_editable",
-            )
         serializer = ProductWriteSerializer(product, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
+        data = dict(serializer.validated_data)
+        tenant = request.active_membership.tenant
 
-        reg_ref_data = serializer.validated_data.pop("regulatory_reference", None)
+        reg_ref_data = data.pop("regulatory_reference", None)
+        confirmed = data.pop("confirm_not_duplicate", False)
+        if "brand_id" in data:
+            data["brand_id"] = str(workflow.resolve_brand(tenant.pk, data["brand_id"]).pk)
+        if data.get("reference_image_id"):
+            workflow.resolve_image(tenant.pk, data["reference_image_id"])
+            data["reference_image_id"] = str(data["reference_image_id"])
 
-        if "brand_id" in serializer.validated_data:
-            brand_id = serializer.validated_data.pop("brand_id")
-            serializer.validated_data["brand"] = _get_brand(request.active_tenant_id, brand_id)
+        if "sku" in data and data["sku"] != product.sku:
+            workflow.check_sku_conflict(tenant.pk, data["sku"], exclude_pk=product.pk)
+        identity = ("brand_id", "name", "variant", "size_value", "size_unit")
+        if not confirmed and any(k in data for k in identity):
+            workflow.check_possible_duplicate(
+                tenant.pk,
+                data.get("brand_id", product.brand_id),
+                data.get("name", product.name),
+                data.get("variant", product.variant),
+                data.get("size_value", product.size_value),
+                data.get("size_unit", product.size_unit),
+                exclude_pk=product.pk,
+            )
 
-        before = {
-            "sku": product.sku, "name": product.name, "status": product.status,
-            "industry": product.industry,
-        }
-        for attr, val in serializer.validated_data.items():
-            setattr(product, attr, val)
-        product.save()
+        workflow.apply_edit(product, data, request.user, tenant)
 
         if reg_ref_data:
             _create_regulatory_ref(product, reg_ref_data, request)
-
-        audit.record(
-            action="catalogue.product.updated",
-            actor=request.user,
-            tenant=request.active_membership.tenant,
-            target=product,
-            before=before,
-            after={"sku": product.sku, "name": product.name, "status": product.status},
-        )
         return Response(ProductSerializer(product).data)
 
 
 @extend_schema(
+    request=None,
     responses={200: ProductSerializer},
     tags=["Catalogue — Products"],
     summary="Submit a product for review",
-    description="Transitions a draft or rejected product to in_review. Validates all required fields.",
+    description=(
+        "Moves a draft, rejected or changes_requested product to in_review and validates the "
+        "industry's required fields. Owners and admins always; editors only when enabled."
+    ),
 )
 class ProductSubmitView(APIView):
-    permission_classes = _BASE_PERMS
+    permission_classes = [*_BASE_PERMS, CanSubmitProducts]
 
     def post(self, request, pk):
-        _require_owner_or_admin(request, self)
         product = _get_product(request.active_tenant_id, pk)
 
-        if product.status not in (Product.Status.DRAFT, Product.Status.REJECTED):
-            raise ValidationError(
-                {"status": f"Cannot submit a product with status '{product.status}'."},
-                code="invalid_status_transition",
+        if product.status not in (
+            Product.Status.DRAFT, Product.Status.REJECTED, Product.Status.CHANGES_REQUESTED
+        ):
+            raise ApiError(
+                409, "invalid_status_transition",
+                f"Cannot submit a product with status '{product.status}'.",
             )
 
-        errors = {}
-        if not product.name:
-            errors["name"] = ["This field is required."]
-        if not product.sku:
-            errors["sku"] = ["This field is required."]
-        if not product.industry:
-            errors["industry"] = ["This field is required."]
+        errors = workflow.missing_required_fields(product)
         if errors:
             raise ValidationError(errors)
+        workflow.guard_industry(product.industry)
 
         now = timezone.now()
+        before_status = product.status
         product.status = Product.Status.IN_REVIEW
         product.submitted_by = request.user
         product.submitted_at = now
@@ -368,21 +391,115 @@ class ProductSubmitView(APIView):
             actor=request.user,
             tenant=request.active_membership.tenant,
             target=product,
-            after={
-                "status": product.status,
-                "name": product.name,
-                "sku": product.sku,
-                "industry": product.industry,
-                "variant": product.variant,
-                "size": product.size,
-                "category": product.category,
-                "gtin": product.gtin,
-                "brand_id": str(product.brand_id),
-                "consumer_visibility": product.consumer_visibility,
-                "submitted_at": now.isoformat(),
-            },
+            before={"status": before_status},
+            # Full field snapshot: the design promises every value is recorded on submit.
+            after={**workflow.snapshot(product), "pending_revision": product.pending_revision,
+                   "submitted_at": now.isoformat()},
         )
         return Response(ProductSerializer(product).data)
+
+
+@extend_schema(
+    request=inline_serializer("WithdrawRequest", fields={"reason": s.CharField()}),
+    responses={200: ProductSerializer},
+    tags=["Catalogue — Products"],
+    summary="Withdraw a product from review back to draft",
+    description=(
+        "Allowed for the user who submitted it or an owner/admin, and only while no reviewer "
+        "decision exists. Audit history, batches and issued codes are preserved."
+    ),
+)
+class ProductWithdrawView(APIView):
+    permission_classes = _BASE_PERMS
+
+    def post(self, request, pk):
+        product = _get_product(request.active_tenant_id, pk)
+        if not (
+            product.submitted_by_id == request.user.pk
+            or IsOwnerOrAdmin().has_permission(request, self)
+        ):
+            raise PermissionDenied("Only the submitter or an owner/admin can withdraw this product.")
+        reason = str(request.data.get("reason", "")).strip()
+        if not reason:
+            raise ValidationError({"reason": ["This field is required."]})
+        workflow.withdraw(product, request.user, reason)
+        return Response(ProductSerializer(product).data)
+
+
+@extend_schema(
+    request=inline_serializer(
+        "CorrectionRequest",
+        fields={"field": s.ChoiceField(choices=["sku", "gtin"]),
+                "requested_value": s.CharField(allow_blank=True), "reason": s.CharField()},
+    ),
+    responses={200: ProductSerializer},
+    tags=["Catalogue — Products"],
+    summary="Request a controlled correction of a locked field (SKU or GTIN)",
+)
+class ProductCorrectionRequestView(APIView):
+    permission_classes = _BASE_PERMS
+
+    def post(self, request, pk):
+        _require_catalogue_editor(request, self)
+        product = _get_product(request.active_tenant_id, pk)
+        field = request.data.get("field")
+        reason = str(request.data.get("reason", "")).strip()
+        errors = {}
+        if field not in workflow.LOCKED_AFTER_APPROVAL:
+            errors["field"] = ["Must be 'sku' or 'gtin'."]
+        if not reason:
+            errors["reason"] = ["This field is required."]
+        if errors:
+            raise ValidationError(errors)
+        product.correction_request = {
+            "field": field,
+            "requested_value": str(request.data.get("requested_value", "")).strip(),
+            "reason": reason,
+            "requested_by": str(request.user.pk),
+            "requested_at": timezone.now().isoformat(),
+        }
+        product.save(update_fields=["correction_request", "updated_at"])
+        audit.record(
+            action="catalogue.product.correction_requested",
+            actor=request.user,
+            tenant=request.active_membership.tenant,
+            target=product,
+            after=product.correction_request,
+            reason=reason,
+        )
+        return Response(ProductSerializer(product).data)
+
+
+@extend_schema(
+    responses={200: s.ListField()},
+    tags=["Catalogue — Products"],
+    summary="Industries, required fields and categories (platform-managed taxonomy)",
+)
+class IndustryListView(APIView):
+    permission_classes = _BASE_PERMS
+
+    def get(self, request):
+        categories = Category.objects.filter(is_active=True, industry__is_active=True)
+        by_industry = {}
+        for cat in categories.order_by("label"):
+            by_industry.setdefault(cat.industry_id, []).append({
+                "key": cat.key,
+                "label": cat.label,
+                "parent": cat.parent.key if cat.parent_id else None,
+                "allowed_units": cat.allowed_units,
+                "required_fields": cat.required_fields,
+            })
+        return Response([
+            {
+                "key": ind.key,
+                "label": ind.label,
+                "description": ind.description,
+                "available": ind.available,
+                "required_fields": ind.required_fields,
+                "categories": by_industry.get(ind.pk, []),
+            }
+            for ind in Industry.objects.filter(is_active=True)
+        ])
 
 
 @extend_schema(
@@ -405,36 +522,9 @@ class ProductConsumerPreviewView(APIView):
 
         payload = {
             "result": "genuine",
-            "product": {
-                "name": product.name,
-                "sku": product.sku,
-                "brand": product.brand.name,
-                "industry": product.industry,
-                "variant": product.variant,
-                "size": product.size,
-            },
-            "batch": {
-                "batch_number": batch.batch_number if batch else None,
-                "manufactured_at": str(batch.manufactured_at) if batch and batch.manufactured_at else None,
-                "expires_at": str(batch.expires_at) if batch and batch.expires_at else None,
-                "status": batch.status if batch else None,
-            },
+            **workflow.consumer_payload(product, batch),
             "manufacturer": {"name": product.tenant.legal_name},
         }
-
-        vis = product.consumer_visibility or {}
-        if not vis.get("brand", True):
-            payload["product"].pop("brand", None)
-        if not vis.get("variant_size", True):
-            payload["product"].pop("variant", None)
-            payload["product"].pop("size", None)
-        if batch:
-            if not vis.get("batch_number", True):
-                payload["batch"].pop("batch_number", None)
-            if not vis.get("manufacture_date", True):
-                payload["batch"].pop("manufactured_at", None)
-            if not vis.get("expiry", True):
-                payload["batch"].pop("expires_at", None)
 
         return Response(payload)
 
@@ -488,7 +578,7 @@ class ProductImageUploadView(APIView):
     parser_classes = [MultiPartParser]
 
     def post(self, request):
-        _require_owner_or_admin(request, self)
+        _require_catalogue_editor(request, self)
 
         try:
             from PIL import Image as PilImage
@@ -567,7 +657,7 @@ class ProductImageDeleteView(APIView):
     permission_classes = _BASE_PERMS
 
     def delete(self, request, pk):
-        _require_owner_or_admin(request, self)
+        _require_catalogue_editor(request, self)
         try:
             image = ProductImage.objects.get(pk=pk)
         except ProductImage.DoesNotExist:
@@ -602,7 +692,7 @@ class RegulatoryRefListCreateView(APIView):
         return Response(RegulatoryRefSerializer(refs, many=True).data)
 
     def post(self, request, product_pk):
-        _require_owner_or_admin(request, self)
+        _require_catalogue_editor(request, self)
         product = _get_product(request.active_tenant_id, product_pk)
         serializer = RegulatoryRefWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -650,7 +740,7 @@ class BatchListCreateView(APIView):
         return Response(BatchSerializer(batches, many=True).data)
 
     def post(self, request, product_pk):
-        _require_owner_or_admin(request, self)
+        _require_catalogue_editor(request, self)
         product = _get_product(request.active_tenant_id, product_pk)
         serializer = BatchWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -693,7 +783,7 @@ class BatchDetailView(APIView):
         return Response(BatchSerializer(batch).data)
 
     def patch(self, request, product_pk, pk):
-        _require_owner_or_admin(request, self)
+        _require_catalogue_editor(request, self)
         batch = _get_batch(request.active_tenant_id, product_pk, pk)
         serializer = BatchWriteSerializer(batch, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
@@ -843,8 +933,8 @@ class BatchRecallView(APIView):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _require_owner_or_admin(request, view):
-    perm = IsOwnerOrAdmin()
+def _require_catalogue_editor(request, view):
+    perm = CanEditCatalogue()
     if not perm.has_permission(request, view):
         raise PermissionDenied(perm.message)
 

@@ -1,5 +1,6 @@
 from django.db import models
 
+from apps.core.models import BaseModel
 from apps.core.tenancy import TenantScopedModel
 
 
@@ -14,6 +15,48 @@ def _default_consumer_visibility():
         "product_image": True,
         "support_contact": True,
     }
+
+
+class Industry(BaseModel):
+    """Platform-managed industry. Managed by platform admins, not tenants."""
+
+    key = models.SlugField(max_length=40, unique=True)
+    label = models.CharField(max_length=120)
+    description = models.CharField(max_length=255, blank=True)
+    available = models.BooleanField(default=True)
+    required_fields = models.JSONField(default=list, blank=True)
+    is_active = models.BooleanField(default=True)
+    sort_order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["sort_order", "label"]
+
+    def __str__(self):
+        return self.label
+
+
+class Category(BaseModel):
+    """Platform-managed category within an industry. Deactivated, never deleted, so existing
+    products keep their historical category reference."""
+
+    industry = models.ForeignKey(Industry, on_delete=models.PROTECT, related_name="categories")
+    key = models.SlugField(max_length=100)
+    label = models.CharField(max_length=160)
+    parent = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT, related_name="children"
+    )
+    allowed_units = models.JSONField(default=list, blank=True)  # empty = any unit
+    required_fields = models.JSONField(default=list, blank=True)  # extends the industry's list
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["label"]
+        constraints = [
+            models.UniqueConstraint(fields=["industry", "key"], name="uniq_category_industry_key")
+        ]
+
+    def __str__(self):
+        return f"{self.industry.key}/{self.key}"
 
 
 class Brand(TenantScopedModel):
@@ -54,7 +97,16 @@ class Product(TenantScopedModel):
         DRAFT = "draft", "Draft"
         IN_REVIEW = "in_review", "In Review"
         APPROVED = "approved", "Approved"
+        CHANGES_REQUESTED = "changes_requested", "Changes requested"
         REJECTED = "rejected", "Rejected"
+
+    class SizeUnit(models.TextChoices):
+        ML = "ml", "ml"
+        L = "L", "L"
+        G = "g", "g"
+        KG = "kg", "kg"
+        MG = "mg", "mg"
+        UNITS = "units", "units"
 
     class Industry(models.TextChoices):
         COSMETICS = "cosmetics", "Cosmetics"
@@ -68,10 +120,19 @@ class Product(TenantScopedModel):
         max_length=20, choices=Industry.choices, blank=True, db_index=True
     )
     variant = models.CharField(max_length=80, blank=True)
-    size = models.CharField(max_length=40, blank=True)
+    # `size` is generated from size_value + size_unit on save (e.g. "400 ml"); never written directly.
+    size = models.CharField(max_length=40, blank=True, editable=False)
+    size_value = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)
+    size_unit = models.CharField(max_length=10, choices=SizeUnit.choices, blank=True)
+    # e.g. {"packs": 2, "per_pack": 10, "unit": "tablets"}; separate from size.
+    pack_configuration = models.JSONField(default=dict, blank=True)
+    dosage_form = models.CharField(max_length=80, blank=True)
+    strength = models.CharField(max_length=80, blank=True)
     category = models.CharField(max_length=100, blank=True)
     gtin = models.CharField(max_length=14, blank=True)
     consumer_visibility = models.JSONField(default=_default_consumer_visibility)
+    # Overrides the tenant support contact on the verification page when set.
+    support_contact = models.JSONField(null=True, blank=True)
     status = models.CharField(
         max_length=20, choices=Status.choices, default=Status.DRAFT, db_index=True
     )
@@ -97,10 +158,45 @@ class Product(TenantScopedModel):
     )
     reviewed_at = models.DateTimeField(null=True, blank=True)
 
+    # Versioning. 0 = never approved. The live columns always hold the last approved values;
+    # edits to an approved product wait in pending_revision until a reviewer approves them.
+    approved_version = models.PositiveIntegerField(default=0)
+    pending_revision = models.JSONField(null=True, blank=True)
+    # Staff can suspend public verification while an identity/regulatory/safety issue is resolved.
+    public_suspended = models.BooleanField(default=False)
+    suspended_reason = models.TextField(blank=True)
+    # Set by staff when a GTIN clash has been investigated; allows approval to proceed.
+    gtin_conflict_resolution = models.TextField(blank=True)
+    # Manufacturer's request for a controlled correction of a locked field (sku / gtin).
+    correction_request = models.JSONField(null=True, blank=True)
+
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=["tenant", "sku"], name="uniq_product_tenant_sku")
         ]
+
+    @property
+    def is_publicly_resolvable(self) -> bool:
+        """Ever approved and not suspended. A revision under review does not hide the last
+        approved version."""
+        ever_approved = self.approved_version > 0 or self.status == self.Status.APPROVED
+        return ever_approved and not self.public_suspended
+
+    @staticmethod
+    def format_size(value, unit) -> str:
+        if value is None or not unit:
+            return ""
+        text = f"{value:f}".rstrip("0").rstrip(".") if "." in f"{value:f}" else f"{value:f}"
+        return f"{text} {unit}"
+
+    def save(self, *args, **kwargs):
+        self.size = self.format_size(self.size_value, self.size_unit)
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None and (
+            "size_value" in update_fields or "size_unit" in update_fields
+        ):
+            kwargs["update_fields"] = {*update_fields, "size"}
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.sku} – {self.name}"

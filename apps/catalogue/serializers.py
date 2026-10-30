@@ -1,6 +1,13 @@
+import re
+
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.validators import URLValidator, validate_email
 from rest_framework import serializers
 
+from apps.core.exceptions import ApiError
+
 from .models import Batch, Brand, BulkImportJob, Product, ProductImage, RegulatoryRef
+from .workflow import guard_industry, validate_taxonomy
 
 
 class BrandSerializer(serializers.ModelSerializer):
@@ -33,6 +40,7 @@ class ProductSerializer(serializers.ModelSerializer):
     batch_count = serializers.SerializerMethodField()
     active_batch_count = serializers.SerializerMethodField()
     codes_issued = serializers.SerializerMethodField()
+    gtin_conflict = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
@@ -46,11 +54,22 @@ class ProductSerializer(serializers.ModelSerializer):
             "industry",
             "variant",
             "size",
+            "size_value",
+            "size_unit",
+            "pack_configuration",
+            "dosage_form",
+            "strength",
             "category",
             "gtin",
+            "gtin_conflict",
             "status",
+            "approved_version",
+            "pending_revision",
+            "public_suspended",
+            "correction_request",
             "is_active",
             "consumer_visibility",
+            "support_contact",
             "review_note",
             "submitted_at",
             "reviewed_at",
@@ -65,8 +84,14 @@ class ProductSerializer(serializers.ModelSerializer):
             "id", "brand_id", "brand_name", "status", "is_active", "review_note",
             "submitted_at", "reviewed_at", "reference_image_id",
             "batch_count", "active_batch_count", "codes_issued",
+            "size", "approved_version", "pending_revision", "public_suspended",
+            "correction_request", "gtin_conflict",
             "created_at", "updated_at",
         ]
+
+    def get_gtin_conflict(self, obj):
+        # Only computed on detail responses (set by the view); None on list rows.
+        return getattr(obj, "_gtin_conflict", None)
 
     def get_brand_name(self, obj):
         return obj.brand.name if obj.brand_id else None
@@ -104,9 +129,20 @@ def _validate_gtin(value):
     return value
 
 
+_VISIBILITY_KEYS = {
+    "brand", "variant_size", "batch_number", "manufacture_date", "expiry",
+    "regulatory_reference", "product_image", "support_contact",
+}
+
+
 class ProductWriteSerializer(serializers.ModelSerializer):
     brand_id = serializers.UUIDField(write_only=True)
+    reference_image_id = serializers.UUIDField(write_only=True, allow_null=True, required=False)
     regulatory_reference = serializers.DictField(required=False, allow_null=True, write_only=True)
+    confirm_not_duplicate = serializers.BooleanField(write_only=True, required=False, default=False)
+    size_value = serializers.DecimalField(
+        max_digits=10, decimal_places=3, required=False, allow_null=True
+    )
 
     class Meta:
         model = Product
@@ -117,26 +153,109 @@ class ProductWriteSerializer(serializers.ModelSerializer):
             "description",
             "industry",
             "variant",
-            "size",
+            "size_value",
+            "size_unit",
+            "pack_configuration",
+            "dosage_form",
+            "strength",
             "category",
             "gtin",
             "consumer_visibility",
+            "support_contact",
+            "reference_image_id",
             "regulatory_reference",
+            "confirm_not_duplicate",
         ]
 
+    def validate_industry(self, value):
+        current = getattr(self.instance, "industry", "")
+        if current and value != current:
+            raise ApiError(
+                409, "field_locked",
+                "Industry cannot be changed after creation. Create a new product or ask "
+                "AuthentiCheck for a controlled migration.",
+                {"field": "industry"},
+            )
+        guard_industry(value)  # pharmaceuticals: 403 industry_locked until the gate opens
+        return value
+
+    def validate_name(self, value):
+        value = value.strip()
+        if not 2 <= len(value) <= 120:
+            raise serializers.ValidationError("Name must be 2-120 characters.")
+        return value
+
     def validate_sku(self, value):
-        return value.strip().upper()
+        value = value.strip().upper()
+        if not re.fullmatch(r"[A-Z0-9_-]{3,64}", value):
+            raise serializers.ValidationError(
+                "SKU must be 3-64 characters: letters, digits, hyphen or underscore."
+            )
+        return value
 
     def validate_gtin(self, value):
         return _validate_gtin(value) if value else ""
 
-    def validate_industry(self, value):
-        if value == Product.Industry.PHARMACEUTICALS:
-            raise serializers.ValidationError(
-                detail="Pharmaceuticals is not available yet.",
-                code="industry_locked",
-            )
+    def validate_size_value(self, value):
+        if value is not None and value <= 0:
+            raise serializers.ValidationError("Size must be a positive number.")
         return value
+
+    def validate_pack_configuration(self, value):
+        if value:
+            for key in ("packs", "per_pack"):
+                if key in value and not (isinstance(value[key], int) and value[key] > 0):
+                    raise serializers.ValidationError({key: "Must be a positive whole number."})
+        return value
+
+    def validate_consumer_visibility(self, value):
+        unknown = set(value) - _VISIBILITY_KEYS
+        if unknown or not all(isinstance(v, bool) for v in value.values()):
+            raise serializers.ValidationError("Unknown key or non-boolean toggle.")
+        base = self.instance.consumer_visibility if self.instance else {}
+        return {**{k: True for k in _VISIBILITY_KEYS}, **base, **value}
+
+    def validate_support_contact(self, value):
+        if value is None:
+            return None
+        unknown = set(value) - {"email", "phone", "url"}
+        if unknown:
+            raise serializers.ValidationError(f"Unknown keys: {', '.join(sorted(unknown))}.")
+        cleaned = {}
+        if value.get("email"):
+            try:
+                validate_email(value["email"])
+            except DjangoValidationError:
+                raise serializers.ValidationError({"email": "Enter a valid email."}) from None
+            cleaned["email"] = value["email"].strip()
+        if value.get("phone"):
+            digits = value["phone"].strip().removeprefix("+")
+            if not (digits.isdigit() and 7 <= len(digits) <= 15):
+                raise serializers.ValidationError({"phone": "Enter a valid phone number."})
+            cleaned["phone"] = value["phone"].strip()
+        if value.get("url"):
+            try:
+                URLValidator(schemes=["http", "https"])(value["url"])
+            except DjangoValidationError:
+                raise serializers.ValidationError({"url": "Enter a valid URL."}) from None
+            cleaned["url"] = value["url"].strip()
+        return cleaned or None
+
+    def validate(self, attrs):
+        # size_value and size_unit travel together (structural check, valid on drafts).
+        value = attrs.get("size_value", getattr(self.instance, "size_value", None))
+        unit = attrs.get("size_unit", getattr(self.instance, "size_unit", ""))
+        if ("size_value" in attrs or "size_unit" in attrs) and bool(value) != bool(unit):
+            raise serializers.ValidationError(
+                {"size_unit" if value else "size_value": ["Provide size_value and size_unit together."]}
+            )
+        industry = attrs.get("industry", getattr(self.instance, "industry", ""))
+        category = attrs.get("category", getattr(self.instance, "category", ""))
+        if "category" in attrs or "size_unit" in attrs or "industry" in attrs:
+            errors = validate_taxonomy(industry, category, unit)
+            if errors:
+                raise serializers.ValidationError(errors)
+        return attrs
 
 
 class RegulatoryRefSerializer(serializers.ModelSerializer):

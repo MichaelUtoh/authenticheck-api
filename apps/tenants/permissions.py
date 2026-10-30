@@ -69,3 +69,33 @@ class IsOwnerOrAdmin(BasePermission):
         if membership is None:
             return False
         return membership.role in (Membership.Role.OWNER, Membership.Role.ADMIN)
+
+
+class CanEditCatalogue(BasePermission):
+    """Owner, admin and editor may create and edit drafts and enter batch data."""
+
+    message = "Owner, admin or editor role required."
+
+    def has_permission(self, request, view):
+        membership = getattr(request, "active_membership", None)
+        if membership is None:
+            return False
+        return membership.role in (
+            Membership.Role.OWNER,
+            Membership.Role.ADMIN,
+            Membership.Role.EDITOR,
+        )
+
+
+class CanSubmitProducts(BasePermission):
+    """Owner and admin always; an editor only when can_submit_products is enabled."""
+
+    message = "You do not have permission to submit products for review."
+
+    def has_permission(self, request, view):
+        membership = getattr(request, "active_membership", None)
+        if membership is None:
+            return False
+        if membership.role in (Membership.Role.OWNER, Membership.Role.ADMIN):
+            return True
+        return membership.role == Membership.Role.EDITOR and membership.can_submit_products

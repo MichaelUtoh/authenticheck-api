@@ -8,6 +8,9 @@ from .views import (
     BrandListCreateView,
     BulkImportJobDetailView,
     BulkImportView,
+    IndustryListView,
+    ProductCorrectionRequestView,
+    ProductWithdrawView,
     ProductActivityView,
     ProductConsumerPreviewView,
     ProductDetailView,
@@ -24,6 +27,13 @@ urlpatterns = [
     path("catalogue/products", ProductListCreateView.as_view(), name="product-list"),
     path("catalogue/products/<uuid:pk>", ProductDetailView.as_view(), name="product-detail"),
     path("catalogue/products/<uuid:pk>/submit", ProductSubmitView.as_view(), name="product-submit"),
+    path("catalogue/products/<uuid:pk>/withdraw", ProductWithdrawView.as_view(), name="product-withdraw"),
+    path(
+        "catalogue/products/<uuid:pk>/correction-request",
+        ProductCorrectionRequestView.as_view(),
+        name="product-correction-request",
+    ),
+    path("catalogue/industries", IndustryListView.as_view(), name="industry-list"),
     path("catalogue/products/<uuid:pk>/activity", ProductActivityView.as_view(), name="product-activity"),
     path(
         "catalogue/products/<uuid:pk>/consumer-preview",

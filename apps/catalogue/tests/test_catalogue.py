@@ -141,13 +141,14 @@ def test_get_product(client, product):
     assert response.data["sku"] == "ACM-50ML"
 
 
-def test_patch_product_status(client, product):
+def test_patch_cannot_set_status_directly(client, product):
+    """Status only moves through submit / review / withdraw, never via PATCH."""
     response = client.patch(
-        f"/api/v1/catalogue/products/{product.pk}", {"status": Product.Status.DISCONTINUED}
+        f"/api/v1/catalogue/products/{product.pk}", {"status": Product.Status.APPROVED}
     )
     assert response.status_code == 200
     product.refresh_from_db()
-    assert product.status == Product.Status.DISCONTINUED
+    assert product.status == Product.Status.DRAFT
 
 
 # ---------------------------------------------------------------------------

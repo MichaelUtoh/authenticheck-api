@@ -40,7 +40,28 @@ class MembershipSerializer(serializers.ModelSerializer):
             "tenant_legal_name",
             "tenant_status",
             "role",
+            "can_submit_products",
             "status",
             "joined_at",
         ]
         read_only_fields = fields
+
+
+class SupportContactSerializer(serializers.ModelSerializer):
+    """Tenant-level support contact shown on the verification page."""
+
+    class Meta:
+        model = Tenant
+        fields = ["support_email", "support_phone", "support_url"]
+
+    def validate_support_phone(self, value):
+        value = value.strip()
+        digits = value[1:] if value.startswith("+") else value
+        if value and not (digits.isdigit() and 7 <= len(digits) <= 15):
+            raise serializers.ValidationError("Enter a valid phone number, e.g. +2348012345678.")
+        return value
+
+
+class MembershipUpdateSerializer(serializers.Serializer):
+    role = serializers.ChoiceField(choices=["admin", "editor", "member", "viewer"], required=False)
+    can_submit_products = serializers.BooleanField(required=False)

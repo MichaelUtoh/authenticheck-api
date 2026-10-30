@@ -6,7 +6,7 @@ Backend requirements for the frontend **Products** tab (list, register, detail, 
 
 - **Required**: the frontend cannot ship the feature without it.
 - **Optional**: improves the experience or can be faked on the client for now. The "Without it" note says what the frontend does instead.
-- **Decision**: a product or policy choice the backend needs answered first. Collected in [section 12](#12-open-decisions).
+- **Decision**: a product or policy choice the backend needs answered first. Resolved in [section 12](#12-decisions).
 
 **Caveat on "exists today".** `API_CONTRACTS.md` is not in the frontend repo. "Today" is based on `ENDPOINT_REFERENCE.md` and the frontend's current `Product` type (`id, name, brand, brand_id, is_active, created_at`). If the contracts already cover an item, strike it.
 
@@ -82,7 +82,7 @@ any status ──archive──► archived (is_active = false) ──restore─�
 | create → `draft` | owner/admin (👑) | partial data allowed |
 | `draft`/`rejected` → `in_review` (submit) | 👑 | full validation, writes audit entry |
 | `in_review` → `approved` / `rejected` | Decision: platform staff (🛡️) or a second approver in the company | reject requires `review_note` |
-| edit | 👑 | `draft`/`rejected`: any field. `approved`: Decision (see [section 12](#12-open-decisions)). `in_review`: locked |
+| edit | 👑 | `draft`/`rejected`: any field. `approved`: Decision (see [section 12](#12-decisions)). `in_review`: locked |
 | archive / restore | 👑 | via `PATCH is_active`. Archived products stay resolvable for codes already issued |
 
 Invalid transitions return `409 invalid_status_transition`. Edits to a locked product return `409 product_not_editable`.
@@ -389,21 +389,23 @@ The pharmaceutical field set (dosage form, strength, etc.) is a Decision.
 
 ---
 
-## 12. Open decisions
+## 12. Decisions
 
-Please answer these before building; each changes the API.
+Answered by the Product Owner (2026-10-30, "Product Workflow & Data Requirements"). Status shows what the backend does today.
 
-1. **Who approves a product?** AuthentiCheck platform staff (`/platform/...`, 🛡️) or a second approver inside the company? (Section 3, 4.)
-2. **What happens when an approved product is edited?** Which fields lock (suggested: `sku`, `industry`, `gtin`)? Do edits to consumer-visible fields send it back to `in_review`?
-3. **Can a submitted product be withdrawn** from `in_review` back to `draft`?
-4. **SKU conflict on draft save:** reject with 409 (simple, recommended), or allow and return a warning? The design shows "Save draft" enabled while the duplicate banner is up.
-5. **Does SKU uniqueness include archived products?** Recommended: yes.
-6. **Size:** free text (`"400 ml"`) or structured `size_value` + `size_unit`?
-7. **GTIN uniqueness:** per tenant, global, or unchecked?
-8. **Category taxonomy:** who owns it, and does it come from the API ([section 11](#11-industry-and-category-metadata))?
-9. **Pharmaceutical required fields** and NAFDAC number format.
-10. **Support contact:** where does it live (tenant settings) and which channels (phone, email, URL)?
-11. **Roles:** is owner/admin (👑) the right level for create/edit/submit, or should a lower "editor" role be able to draft?
+| # | Topic | Decision | Status |
+|---|---|---|---|
+| 1 | Approver | AuthentiCheck platform staff. Flow `draft → in_review → approved \| changes_requested`; reviewers can also reject. Approval does not unlock pharma, batches or code issuance. | Done: `POST /platform/products/{id}/approve \| request-changes \| reject`, review queue `GET /platform/products` |
+| 2 | Edit approved product | Industry locked at creation. SKU and GTIN locked after approval (controlled correction). Consumer-visible edits create a new version and return to `in_review`; last approved version stays live. Internal fields editable with audit. | Done: `409 field_locked`, `pending_revision`, `approved_version`; `POST .../correction-request` + `POST /platform/products/{id}/correct`; `suspend` / `unsuspend` |
+| 3 | Withdraw | `in_review → draft` before a reviewer decision; records user, time, reason. | Done: `POST .../withdraw` |
+| 4 | Size | `size_value` (positive) + `size_unit` (`ml L g kg mg units`); display string generated; pack configuration separate; unit checked against the category. | Done (`size` is read-only) |
+| 5 | GTIN | Optional, format + check digit, globally unique with manual conflict review; blocks approval, not saving. SKU unique per tenant. | Done: `409 gtin_conflict` on approve until staff record `gtin_conflict_resolution` |
+| 6 | Taxonomy | Served by API, managed by platform admins, no frontend release, deactivate never delete. | Done: `GET /catalogue/industries`, `/platform/industries`, `/platform/categories` |
+| 7 | Pharma | Dedicated field set + separate release gate; NAFDAC number is text with verification metadata, no regex. | Fields added (`dosage_form`, `strength`, `pack_configuration`); gate stays locked (`403 industry_locked`) |
+| 8 | Support contact | Tenant settings with optional product override; email required, phone encouraged, URL optional. | Done: `GET/PATCH /tenants/me/support-contact`, `support_contact` on product, exposed by `/verify`. **Not enforced yet:** email required before tenant go-live |
+| 9 | Roles | Owner, admin, `editor` (drafts; submit only if enabled), least privilege, enforced in the backend. | `editor` + `PATCH /tenants/me/members/{id}` done. Production/Quality and Investigator roles **not added yet** |
+
+**Not covered by the PO answers (defaults kept):** SKU conflict on draft save returns `409 sku_conflict`; SKU uniqueness includes archived products.
 
 ## 13. Error codes introduced
 
@@ -413,7 +415,9 @@ Please answer these before building; each changes the API.
 | 409 | `sku_conflict` | SKU already used in the tenant |
 | 409 | `possible_duplicate` | similar product and no `confirm_not_duplicate` |
 | 409 | `invalid_status_transition` | e.g. approving a draft |
-| 409 | `product_not_editable` | editing a locked product |
+| 409 | `product_not_editable` | editing a product that is in review |
+| 409 | `field_locked` | changing industry, or SKU/GTIN after approval |
+| 409 | `gtin_conflict` | approving a product whose GTIN is registered elsewhere |
 | 403 | `industry_locked` | pharmaceuticals before the gate opens |
 | 413 | `file_too_large` | image over 5 MB |
 | 415 | `unsupported_media_type` | image not PNG/JPEG |

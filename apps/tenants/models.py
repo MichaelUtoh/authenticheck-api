@@ -21,6 +21,10 @@ class Tenant(BaseModel):
         max_length=20, choices=Status.choices, default=Status.PENDING, db_index=True
     )
     is_pharma = models.BooleanField(default=False, db_index=True)
+    # Default consumer-facing support contact; a product may override it.
+    support_email = models.EmailField(blank=True)
+    support_phone = models.CharField(max_length=32, blank=True)
+    support_url = models.URLField(blank=True)
 
     def __str__(self):
         return self.trading_name or self.legal_name
@@ -33,6 +37,7 @@ class Membership(BaseModel):
     class Role(models.TextChoices):
         OWNER = "owner", "Owner"
         ADMIN = "admin", "Admin"
+        EDITOR = "editor", "Editor"
         MEMBER = "member", "Member"
         VIEWER = "viewer", "Viewer"
 
@@ -45,6 +50,8 @@ class Membership(BaseModel):
     )
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="memberships")
     role = models.CharField(max_length=20, choices=Role.choices)
+    # Editors may submit products for review only when an owner/admin enables it.
+    can_submit_products = models.BooleanField(default=False)
     status = models.CharField(
         max_length=10, choices=Status.choices, default=Status.ACTIVE, db_index=True
     )

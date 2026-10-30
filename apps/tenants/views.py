@@ -14,6 +14,8 @@ from .models import Membership, Tenant
 from .permissions import HasActiveTenantMembership, IsMFAVerified, IsOwnerOrAdmin
 from .serializers import (
     MembershipSerializer,
+    MembershipUpdateSerializer,
+    SupportContactSerializer,
     TenantRegisterSerializer,
     TenantSerializer,
     TenantStatusUpdateSerializer,
@@ -194,3 +196,84 @@ class ReleaseGatesView(APIView):
                 ],
             },
         })
+
+
+@extend_schema_view(
+    get=extend_schema(
+        responses={200: SupportContactSerializer},
+        tags=["Tenants"],
+        summary="Get the tenant's default support contact",
+    ),
+    patch=extend_schema(
+        request=SupportContactSerializer,
+        responses={200: SupportContactSerializer},
+        tags=["Tenants"],
+        summary="Update the tenant's default support contact",
+    ),
+)
+class SupportContactView(APIView):
+    """Support contact lives in tenant settings; a product may override it."""
+
+    permission_classes = [IsAuthenticated, HasActiveTenantMembership]
+
+    def get(self, request):
+        return Response(SupportContactSerializer(request.active_membership.tenant).data)
+
+    def patch(self, request):
+        if not IsOwnerOrAdmin().has_permission(request, self):
+            raise PermissionDenied(IsOwnerOrAdmin.message)
+        tenant = request.active_membership.tenant
+        before = SupportContactSerializer(tenant).data
+        serializer = SupportContactSerializer(tenant, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        audit.record(
+            action="tenant.support_contact.updated",
+            actor=request.user,
+            tenant=tenant,
+            target=tenant,
+            before=dict(before),
+            after=dict(serializer.data),
+        )
+        return Response(serializer.data)
+
+
+@extend_schema(
+    request=MembershipUpdateSerializer,
+    responses={200: MembershipSerializer},
+    tags=["Tenants"],
+    summary="Change a member's role or product-submission permission",
+)
+class TenantMemberDetailView(APIView):
+    """Owner/admin may enable submission for editors; only the owner may change roles."""
+
+    permission_classes = [IsAuthenticated, HasActiveTenantMembership, IsOwnerOrAdmin]
+
+    def patch(self, request, pk):
+        try:
+            member = Membership.objects.select_related("user", "tenant").get(
+                pk=pk, tenant_id=request.active_tenant_id, status=Membership.Status.ACTIVE
+            )
+        except Membership.DoesNotExist:
+            raise NotFound("Member not found.") from None
+        serializer = MembershipUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        if member.role == Membership.Role.OWNER:
+            raise PermissionDenied("The owner's role cannot be changed.")
+        if "role" in data and request.active_membership.role != Membership.Role.OWNER:
+            raise PermissionDenied("Only the owner can change roles.")
+
+        before = {"role": member.role, "can_submit_products": member.can_submit_products}
+        for attr, val in data.items():
+            setattr(member, attr, val)
+        member.save()
+        audit.record(
+            action="tenant.member.updated",
+            actor=request.user,
+            tenant=request.active_membership.tenant,
+            target=member,
+            before=before,
+            after={"role": member.role, "can_submit_products": member.can_submit_products},
+        )
+        return Response(MembershipSerializer(member).data)

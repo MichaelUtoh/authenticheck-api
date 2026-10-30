@@ -48,6 +48,17 @@ class IdempotencyInProgress(APIException):
     default_code = "idempotency_in_progress"
 
 
+class ApiError(APIException):
+    """A business-rule error with an explicit HTTP status, machine-readable code and optional
+    details, e.g. ApiError(409, "sku_conflict", "SKU is already used.", {"existing_product": ...})."""
+
+    def __init__(self, status_code: int, code: str, message: str, details=None):
+        self.status_code = status_code
+        self.detail = {"code": code, "message": message}
+        if details is not None:
+            self.detail["details"] = details
+
+
 def _envelope(code: str, message: str, status_code: int, details=None) -> Response:
     error = {"code": code, "message": message, "request_id": get_request_id()}
     if details is not None:
@@ -74,6 +85,7 @@ def api_exception_handler(exc, context):
         if isinstance(detail, dict) and "message" in detail:
             code = str(detail.get("code", getattr(exc, "default_code", "error")))
             message = str(detail["message"])
+            details = detail.get("details")
         else:
             code = getattr(detail, "code", None) or getattr(exc, "default_code", "error")
             message = (
@@ -81,7 +93,7 @@ def api_exception_handler(exc, context):
                 if detail is not None and not isinstance(detail, list | dict)
                 else "Request failed."
             )
-        details = None
+            details = None
 
     wrapped = _envelope(code, message, response.status_code, details)
     for header in _PASSTHROUGH_HEADERS:

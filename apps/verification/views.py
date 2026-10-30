@@ -5,7 +5,8 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.catalogue.models import Batch, Product
+from apps.catalogue import workflow
+from apps.catalogue.models import Batch
 from apps.issuance.models import Code
 
 from .models import ScanEvent
@@ -71,8 +72,8 @@ class VerifyView(APIView):
         batch = code.batch
         product = batch.product
 
-        # Only approved products are resolvable
-        if product.status != Product.Status.APPROVED:
+        # Resolvable once approved, and stays so while a revision is in review; staff can suspend.
+        if not product.is_publicly_resolvable:
             _record(code_str, code, ScanEvent.Result.NOT_FOUND, ip, ua)
             return Response(
                 {"result": "not_found", "detail": "Code not found."},
@@ -89,44 +90,19 @@ class VerifyView(APIView):
         _fire_verified(scan, code, result)
 
         vis = product.consumer_visibility or {}
-
-        product_payload = {
-            "name": product.name,
-            "sku": product.sku,
-            "brand": product.brand.name,
-            "industry": product.industry,
-            "variant": product.variant,
-            "size": product.size,
-        }
-        batch_payload = {
-            "batch_number": batch.batch_number,
-            "manufactured_at": batch.manufactured_at,
-            "expires_at": batch.expires_at,
-            "status": batch.status,
-        }
-
-        # Apply consumer_visibility — omit (not null) hidden fields
-        if not vis.get("brand", True):
-            product_payload.pop("brand", None)
-        if not vis.get("variant_size", True):
-            product_payload.pop("variant", None)
-            product_payload.pop("size", None)
-        if not vis.get("batch_number", True):
-            batch_payload.pop("batch_number", None)
-        if not vis.get("manufacture_date", True):
-            batch_payload.pop("manufactured_at", None)
-        if not vis.get("expiry", True):
-            batch_payload.pop("expires_at", None)
+        consumer = workflow.consumer_payload(product, batch)
 
         payload = {
             "result": result,
             "code": code.code,
-            "product": product_payload,
-            "batch": batch_payload,
+            "product": consumer["product"],
+            "batch": {**consumer["batch"], "status": batch.status},
             "manufacturer": {
                 "name": code.tenant.legal_name,
             },
         }
+        if "support_contact" in consumer:
+            payload["support_contact"] = consumer["support_contact"]
 
         if vis.get("product_image", True) and product.reference_image_id:
             payload["product_image"] = {"url": product.reference_image.url}

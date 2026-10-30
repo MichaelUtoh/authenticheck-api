@@ -34,6 +34,7 @@ class VerifyGenuineSerializer(serializers.Serializer):
     batch = BatchInfoSerializer()
     manufacturer = ManufacturerInfoSerializer()
     product_image = ProductImageInfoSerializer(required=False)
+    support_contact = serializers.DictField(child=serializers.CharField(), required=False)
     regulatory_refs = serializers.ListField(child=serializers.DictField(), required=False)
 
 
