@@ -40,6 +40,8 @@ X-API-Key: ac_<token>
 | 🔑 | Requires `Authorization: Bearer <token>` |
 | 🏢 | Requires Bearer token **and** active approved tenant membership (`tid` in JWT) |
 | 👑 | Requires 🏢 + `owner` or `admin` role |
+| ✏️ | Requires 🏢 + `owner`, `admin` or `editor` role (catalogue drafts and batch entry) |
+| 📤 | Requires 🏢 + `owner` or `admin`, or an `editor` with `can_submit_products` enabled |
 | 🛡️ | Requires `is_staff=True` + MFA verified |
 
 ---
@@ -84,7 +86,11 @@ X-API-Key: ac_<token>
 |---|---|---|---|
 | `POST` | `/tenants/register` | 🔑 | Register a new manufacturer tenant (creator becomes `owner`) |
 | `GET` | `/tenants/me` | 🏢 | Active tenant details |
-| `GET` | `/tenants/me/members` | 👑 | List active tenant members |
+| `GET` | `/tenants/me/members` | 👑 | List active tenant members (includes `role`, `can_submit_products`) |
+| `PATCH` | `/tenants/me/members/{id}` | 👑 | Enable `can_submit_products` for an editor. Changing `role` (`admin`, `editor`, `member`, `viewer`) is **owner only**; the owner's own role cannot change |
+| `GET` | `/tenants/me/support-contact` | 🏢 | Default consumer support contact (`support_email`, `support_phone`, `support_url`) |
+| `PATCH` | `/tenants/me/support-contact` | 👑 | Update the support contact (audited). Shown on `/verify` unless a product overrides it |
+| `GET` | `/tenants/me/release-gates` | 🏢 | Industry release-gate state (cosmetics `live`, pharmaceuticals `locked`) |
 | `POST` | `/tenants/{id}/approve` | 🛡️ | Approve a pending tenant |
 | `POST` | `/tenants/{id}/reject` | 🛡️ | Reject a pending tenant |
 | `POST` | `/tenants/{id}/request-info` | 🛡️ | Move tenant to `info_requested` |
@@ -106,14 +112,48 @@ X-API-Key: ac_<token>
 
 ## Catalogue — Products
 
+Lifecycle: `draft → in_review → approved | changes_requested | rejected`. Products are approved by
+**AuthentiCheck platform staff** (see [Platform](#platform-staff-only)), never by the tenant.
+`is_active=false` archives a product. A product is publicly verifiable once approved and stays so
+(with its last approved values) while a revision is in review, unless staff suspend it.
+
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/catalogue/products` | 🏢 | List products |
-| `POST` | `/catalogue/products` | 👑 | Create a product |
-| `GET` | `/catalogue/products/{id}` | 🏢 | Get a product |
-| `PATCH` | `/catalogue/products/{id}` | 👑 | Update a product |
-| `GET` | `/catalogue/products/{product_id}/regulatory-refs` | 🏢 | List regulatory references for a product |
-| `POST` | `/catalogue/products/{product_id}/regulatory-refs` | 👑 | Add a regulatory reference |
+| `GET` | `/catalogue/products` | 🏢 | List products (paginated). Filters: `q`, `status` (repeatable), `brand_id`, `industry`, `is_active` (default `true`), `ordering` (`-updated_at` default, `name`, `-name`, `sku`, `-sku`, `-created_at`), `page`, `page_size` |
+| `POST` | `/catalogue/products` | ✏️ | Create a product. Always starts as `draft`; partial data allowed. Pass `confirm_not_duplicate: true` to override `possible_duplicate` |
+| `GET` | `/catalogue/products/{id}` | 🏢 | Detail incl. `batch_count`, `active_batch_count`, `codes_issued`, `gtin_conflict`, `pending_revision` |
+| `PATCH` | `/catalogue/products/{id}` | ✏️ | Edit. `status` cannot be set here. See edit rules below |
+| `POST` | `/catalogue/products/{id}/submit` | 📤 | `draft`/`rejected`/`changes_requested` → `in_review`. Validates the industry's required fields; stores a full field snapshot in the audit log |
+| `POST` | `/catalogue/products/{id}/withdraw` | submitter or 👑 | `in_review` → `draft`. Body: `{ "reason": "..." }` (required). Only before a reviewer decision |
+| `POST` | `/catalogue/products/{id}/correction-request` | ✏️ | Ask for a controlled correction of a locked field. Body: `{ "field": "sku"\|"gtin", "requested_value": "...", "reason": "..." }` |
+| `GET` | `/catalogue/products/{id}/activity` | 🏢 | Per-product audit history (last 100 events, with `before` / `after`) |
+| `GET` | `/catalogue/products/{id}/consumer-preview` | 🏢 | Exactly what `/verify` would show (last approved values) |
+| `GET` | `/catalogue/industries` | 🏢 | Industries, required fields and active categories (with `allowed_units`). Platform-managed; do not hard-code |
+| `POST` | `/catalogue/images` | ✏️ | Upload a reference image (`multipart/form-data`, field `file`; PNG/JPEG, max 5 MB, EXIF stripped) |
+| `DELETE` | `/catalogue/images/{id}` | ✏️ | Remove an uploaded image |
+| `GET` | `/catalogue/products/{product_id}/regulatory-refs` | 🏢 | List regulatory references (includes `source`, `verification_status`) |
+| `POST` | `/catalogue/products/{product_id}/regulatory-refs` | ✏️ | Add a regulatory reference. Verification is staff-only |
+
+**Key product fields:** `name`, `brand_id`, `industry` (`cosmetics`; `pharmaceuticals` is locked),
+`variant`, `size_value` + `size_unit` (`ml`, `L`, `g`, `kg`, `mg`, `units`), `size` (read-only, generated,
+e.g. `"400 ml"`), `pack_configuration`, `dosage_form`, `strength`, `category` (slug from
+`/catalogue/industries`), `sku`, `gtin` (optional), `consumer_visibility`, `support_contact`
+(`{email, phone, url}` override), `reference_image_id`, `regulatory_reference` (nested, write-only),
+`confirm_not_duplicate` (write-only). Read-only: `status`, `approved_version`, `pending_revision`,
+`public_suspended`, `review_note`, `correction_request`, `gtin_conflict` (detail only).
+
+**Edit rules**
+
+| Product state | Behaviour |
+|---|---|
+| `in_review` | Locked: `409 product_not_editable`. Withdraw first |
+| Never approved | Any field editable, except `industry` once set (`409 field_locked`) |
+| Approved | `industry`, `sku`, `gtin` locked (`409 field_locked`, `details.field` names it). Consumer-visible fields (name, brand, variant, size, category, image, visibility, support contact, pharma fields) are stored in `pending_revision`, the status returns to `in_review`, and the live values are unchanged until a reviewer approves. Internal fields (e.g. `description`) save immediately without re-review |
+
+**Errors:** `409 sku_conflict` (SKU unique per tenant, case-insensitive, archived included),
+`409 possible_duplicate` (same brand + name + variant + size), both with
+`details.existing_product`. `403 industry_locked` for pharmaceuticals. `400 validation_error` with
+per-field `details`.
 
 ---
 
@@ -122,9 +162,9 @@ X-API-Key: ac_<token>
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | `GET` | `/catalogue/products/{product_id}/batches` | 🏢 | List batches for a product |
-| `POST` | `/catalogue/products/{product_id}/batches` | 👑 | Create a batch |
+| `POST` | `/catalogue/products/{product_id}/batches` | ✏️ | Create a batch (`product_id` also required in the body) |
 | `GET` | `/catalogue/products/{product_id}/batches/{id}` | 🏢 | Get a batch |
-| `PATCH` | `/catalogue/products/{product_id}/batches/{id}` | 👑 | Update a batch |
+| `PATCH` | `/catalogue/products/{product_id}/batches/{id}` | ✏️ | Update a batch |
 | `POST` | `/catalogue/products/{product_id}/batches/{id}/recall` | 👑 | Recall a batch (sets status + deactivates all codes) |
 
 ---
@@ -153,7 +193,7 @@ X-API-Key: ac_<token>
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/issuance/codes` | 🏢 | List codes (max 500; filter by `batch_id`, `job_id`, `status`) |
+| `GET` | `/issuance/codes` | 🏢 | List codes, paginated (`count/next/previous/results`; `page`, `page_size` max 100). Filter by `batch_id`, `job_id`, `status` |
 | `POST` | `/issuance/codes/{code}/deactivate` | 👑 | Deactivate a single code by its code string |
 | `POST` | `/issuance/batches/{batch_id}/deactivate` | 👑 | Bulk-deactivate all active codes for a batch |
 
@@ -163,7 +203,10 @@ X-API-Key: ac_<token>
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/verify/{code}` | 🌐 | Resolve a product code — returns result, product info, batch info |
+| `GET` | `/verify/{code}` | 🌐 | Resolve a product code — returns result, product info, batch info, and `support_contact` (product override, else tenant default) |
+
+Hidden fields (per the product's `consumer_visibility` toggles) are **omitted**, not null. Products that
+are not yet approved, or are suspended by staff, return `404 not_found`.
 
 ---
 
@@ -212,6 +255,18 @@ X-API-Key: ac_<token>
 | `GET` | `/platform/tenants/{id}` | 🛡️ | Tenant detail with usage stats |
 | `GET` | `/platform/flags` | 🛡️ | Unreviewed risk flags across all tenants |
 | `GET` | `/platform/audit` | 🛡️ | Paginated audit log (filter by `action`, `tenant_id`) |
+| `GET` | `/platform/products` | 🛡️ | Product review queue, paginated, oldest submission first (filter `status`, default `in_review`; `tenant_id`) |
+| `POST` | `/platform/products/{id}/approve` | 🛡️ | Approve; applies any pending revision as a new version. `409 gtin_conflict` if the GTIN is registered elsewhere, unless body has `gtin_conflict_resolution`. Pharmaceuticals stay blocked (`403 industry_locked`) |
+| `POST` | `/platform/products/{id}/request-changes` | 🛡️ | Send back for edits. Body: `{ "review_note": "..." }` (required) |
+| `POST` | `/platform/products/{id}/reject` | 🛡️ | Reject. Body: `{ "review_note": "..." }` (required) |
+| `POST` | `/platform/products/{id}/suspend` | 🛡️ | Suspend public verification. Body: `{ "reason": "..." }` |
+| `POST` | `/platform/products/{id}/unsuspend` | 🛡️ | Restore public verification. Body: `{ "reason": "..." }` |
+| `POST` | `/platform/products/{id}/correct` | 🛡️ | Controlled correction of a locked `sku` / `gtin`. Body includes `reason`; re-runs uniqueness checks and audits old/new values |
+| `POST` | `/platform/products/{product_id}/regulatory-refs/{ref_id}/verify` | 🛡️ | Record a regulatory-reference verification (`method` required, `note` optional) |
+| `GET` `POST` | `/platform/industries` | 🛡️ | List / create industries |
+| `PATCH` | `/platform/industries/{id}` | 🛡️ | Update an industry (`available`, `required_fields`, `is_active`, ...) |
+| `GET` `POST` | `/platform/categories` | 🛡️ | List / create categories (`industry` is the industry key) |
+| `PATCH` | `/platform/categories/{id}` | 🛡️ | Update or deactivate (`is_active: false`) a category. Never deleted, so existing products keep their category |
 
 ---
 
@@ -221,6 +276,22 @@ X-API-Key: ac_<token>
 |---|---|---|---|
 | `GET` | `/01/{gtin}/21/{serial}` | 🌐 | GS1 Digital Link — redirects (`302`) to `/verify/{serial}` |
 | `POST` | `/integrations/africastalking/ussd` | 🌐 | Africa's Talking USSD inbound (validated by AT API key) |
+
+---
+
+## Error codes (product workflow)
+
+| HTTP | `code` | When |
+|---|---|---|
+| 400 | `validation_error` | Field errors; `details` keyed by field (also submit with missing required fields) |
+| 403 | `industry_locked` | Pharmaceuticals before the release gate opens |
+| 409 | `sku_conflict` | SKU already used in the tenant |
+| 409 | `possible_duplicate` | Similar product and no `confirm_not_duplicate` |
+| 409 | `invalid_status_transition` | e.g. submitting an approved product, approving a draft, withdrawing after a decision |
+| 409 | `product_not_editable` | Editing a product that is `in_review` |
+| 409 | `field_locked` | Changing `industry` after creation, or `sku` / `gtin` after approval |
+| 409 | `gtin_conflict` | Approving a product whose GTIN is registered against another product |
+| 413 / 415 / 422 | `file_too_large` / `unsupported_media_type` / `image_invalid` | Image upload |
 
 ---
 
