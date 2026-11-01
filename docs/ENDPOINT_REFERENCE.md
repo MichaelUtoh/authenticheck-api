@@ -86,7 +86,7 @@ X-API-Key: ac_<token>
 |---|---|---|---|
 | `POST` | `/tenants/register` | 🔑 | Register a new manufacturer tenant (creator becomes `owner`) |
 | `GET` | `/tenants/me` | 🏢 | Active tenant details |
-| `GET` | `/tenants/me/members` | 👑 | List active tenant members (includes `role`, `can_submit_products`) |
+| `GET` | `/tenants/me/members` | 👑 | List active tenant members (`email`, `full_name`, `role`, `can_submit_products`) |
 | `PATCH` | `/tenants/me/members/{id}` | 👑 | Enable `can_submit_products` for an editor. Changing `role` (`admin`, `editor`, `member`, `viewer`) is **owner only**; the owner's own role cannot change |
 | `GET` | `/tenants/me/support-contact` | 🏢 | Default consumer support contact (`support_email`, `support_phone`, `support_url`) |
 | `PATCH` | `/tenants/me/support-contact` | 👑 | Update the support contact (audited). Shown on `/verify` unless a product overrides it |
@@ -95,6 +95,31 @@ X-API-Key: ac_<token>
 | `POST` | `/tenants/{id}/reject` | 🛡️ | Reject a pending tenant |
 | `POST` | `/tenants/{id}/request-info` | 🛡️ | Move tenant to `info_requested` |
 | `POST` | `/tenants/{id}/suspend` | 🛡️ | Suspend an approved tenant |
+
+---
+
+## Tenants — Invitations
+
+Owners and admins invite people by email with a role. Only the **owner** can invite or manage **admins**. The `owner` role can't be granted by invitation. Roles: `admin`, `editor`, `member`, `viewer`. The single-use link is only ever sent by email (never returned by the API), is stored hashed, and expires after `INVITATION_TTL_DAYS` (default 7). The email links to `{FRONTEND_URL}/accept-invite?token=…`.
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `POST` | `/tenants/me/invitations` | 👑 | Invite. Body: `{ "email", "role", "can_submit_products"? }` (`can_submit_products` is for editors only). `409 already_member`, `409 invitation_pending`. Rate-limited (30/hour per user) |
+| `GET` | `/tenants/me/invitations` | 👑 | List. `status` = `pending` (default), `accepted`, `revoked`, `expired` or `all` |
+| `POST` | `/tenants/me/invitations/{id}/resend` | 👑 | Issue a new link (the old one stops working) and restart the expiry. Pending invitations only |
+| `DELETE` | `/tenants/me/invitations/{id}` | 👑 | Revoke a pending invitation |
+| `GET` | `/invitations/preview?token=` | 🌐 | What the invite page shows: `email`, `role`, `role_label`, `tenant_name`, `invited_by`, `expires_at`, `has_account` |
+| `POST` | `/invitations/accept` | 🌐 / 🔑 | Accept and create the membership. **New person:** `{ "token", "password", "full_name"? }`. **Existing account:** log in as the invited email first, then send `{ "token" }` |
+
+**Response shapes.** Create (`201`), resend (`200`) and each item in the list return an invitation: `{ id, email, role, can_submit_products, status, expires_at, invited_by: { id, name } | null, accepted_at, created_at }`. `status` is `pending`, `accepted`, `revoked` or `expired`. The list is **not paginated**: a plain JSON array, newest first. Accept returns `201 { detail, tenant_id, tenant_name, role, account_created }`. Revoke returns `204`.
+
+**Expired invitations.** They can't be resent (`409 invitation_not_pending`); invite the email again instead. An expired row never blocks a new invite, because only `pending` ones count for `409 invitation_pending`.
+
+**Admin invitations.** An admin (not owner) sees admin invitations in the list, but resend, revoke and create for the `admin` role return `403 permission_denied` ("Only the owner can invite or manage admins."). The UI should hide those actions for admins.
+
+**Accept name.** `full_name` is optional in the API; the form should require it, since the app displays it.
+
+**Accept rules:** the account is created with the invited email (marked verified, since they received the link), then the person logs in normally. If the email already has an account and the caller isn't logged in, the response is `409 account_exists`. Logging in as a different account returns `403 invitation_email_mismatch`. A previously removed member is reactivated with the new role. Unknown, used and revoked links all return the same `404 invitation_invalid`. Expired links return `410 invitation_expired`.
 
 ---
 
@@ -305,6 +330,16 @@ are not yet approved, or are suspended by staff, return `404 not_found`.
 | 409 | `field_locked` | Changing `industry` after creation, or `sku` / `gtin` after approval |
 | 409 | `gtin_conflict` | Approving a product whose GTIN is registered against another product |
 | 409 | `image_in_use` | Deleting an image a product still references |
+| 409 | `already_member` | Inviting (or accepting for) someone who is already an active member |
+| 409 | `invitation_pending` | A pending invitation already exists for that email |
+| 409 | `invitation_not_pending` | Resending or revoking an invitation that is not pending (this includes expired ones) |
+| 409 | `account_exists` | Accepting an invitation for an email that already has an account, without logging in |
+| 409 | `tenant_not_active` | Accepting an invitation to a company that is not active |
+| 403 | `invitation_email_mismatch` | Accepting while logged in as a different account |
+| 404 | `invitation_invalid` | Unknown, used or revoked invitation link |
+| 410 | `invitation_expired` | Invitation link past its expiry |
+| 403 | `permission_denied` | An admin resending or revoking an invitation for the `admin` role, or inviting one (owner only) |
+| 429 | `throttled` | Invitation rate limit hit (30/hour per user on create and resend). `Retry-After` header gives the wait in seconds |
 | 409 | `batch_not_active` | Issuing codes for (or resuming a job of) a recalled or expired batch |
 | 409 | `product_not_approved` | Issuing codes for a product that is not approved |
 | 409 | `job_not_resumable` | Resuming a job that is not `partial` (or `failed` with some codes) |

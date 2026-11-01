@@ -1,7 +1,7 @@
 import hashlib
 import re
 
-from rest_framework.throttling import AnonRateThrottle
+from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 
 _UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
@@ -62,3 +62,21 @@ class MFARateThrottle(_ExtendedRate, AnonRateThrottle):
     """10 per 15 min per IP — general MFA endpoint protection."""
 
     scope = "mfa"
+
+
+class InvitationSendThrottle(_ExtendedRate, UserRateThrottle):
+    """Per user: stops an account being used to spam invitation emails."""
+
+    scope = "invitation_send"
+
+
+class InvitationAcceptThrottle(_ExtendedRate, AnonRateThrottle):
+    """Per IP, for accepting an invitation."""
+
+    scope = "invitation_accept"
+
+
+class InvitationPreviewThrottle(_ExtendedRate, AnonRateThrottle):
+    """Per IP, for looking an invitation up by token."""
+
+    scope = "invitation_preview"

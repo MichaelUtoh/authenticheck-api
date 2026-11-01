@@ -30,11 +30,15 @@ class MembershipSerializer(serializers.ModelSerializer):
     tenant_name = serializers.CharField(source="tenant.trading_name", read_only=True)
     tenant_legal_name = serializers.CharField(source="tenant.legal_name", read_only=True)
     tenant_status = serializers.CharField(source="tenant.status", read_only=True)
+    email = serializers.EmailField(source="user.email", read_only=True)
+    full_name = serializers.CharField(source="user.full_name", read_only=True)
 
     class Meta:
         model = Membership
         fields = [
             "id",
+            "email",
+            "full_name",
             "tenant_id",
             "tenant_name",
             "tenant_legal_name",

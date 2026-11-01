@@ -137,6 +137,8 @@ class Invitation(BaseModel):
     )
     email = models.EmailField()
     role = models.CharField(max_length=20)
+    # Applies to editors: whether they may submit products for review once they join.
+    can_submit_products = models.BooleanField(default=False)
     token_hash = models.CharField(max_length=64, db_index=True)
     status = models.CharField(
         max_length=10, choices=Status.choices, default=Status.PENDING, db_index=True

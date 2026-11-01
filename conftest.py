@@ -11,6 +11,15 @@ def clear_cache():
     cache.clear()
 
 
+@pytest.fixture(scope="session", autouse=True)
+def fast_mail_hostname():
+    """Django's mail Message-ID does a reverse DNS lookup of this machine, which can take ~30 s
+    on a laptop. Tests never need the real hostname."""
+    from django.core.mail.utils import DNS_NAME
+
+    DNS_NAME._fqdn = "localhost"
+
+
 @pytest.fixture(scope="session")
 def django_db_setup(django_db_setup, django_db_blocker):
     """Create the table for the unmanaged, test-only Widget model once per session.

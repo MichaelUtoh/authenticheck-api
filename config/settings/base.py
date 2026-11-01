@@ -132,6 +132,20 @@ ADMIN_REFRESH_ABSOLUTE_HOURS = env.int("ADMIN_REFRESH_ABSOLUTE_HOURS", default=1
 REFRESH_GRACE_SECONDS = env.int("REFRESH_GRACE_SECONDS", default=10)
 RECENT_AUTH_SECONDS = env.int("RECENT_AUTH_SECONDS", default=300)
 INVITATION_TTL_DAYS = env.int("INVITATION_TTL_DAYS", default=7)
+# --- Email (invitations, account emails) ---------------------------------------------------
+# local.py prints emails to the console and test.py keeps them in memory; every other environment
+# uses SMTP configured here. Without EMAIL_HOST, mail cannot be delivered.
+EMAIL_BACKEND = env("EMAIL_BACKEND", default="django.core.mail.backends.smtp.EmailBackend")
+EMAIL_HOST = env("EMAIL_HOST", default="localhost")
+EMAIL_PORT = env.int("EMAIL_PORT", default=587)
+EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
+EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
+EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
+EMAIL_TIMEOUT = 10
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="AuthentiCheck <no-reply@localhost>")
+
+# Base URL of the frontend; invitation emails link to {FRONTEND_URL}/accept-invite?token=...
+FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:3000")
 RESET_TOKEN_TTL_MINUTES = env.int("RESET_TOKEN_TTL_MINUTES", default=30)
 SUPPORT_GRANT_MAX_HOURS = env.int("SUPPORT_GRANT_MAX_HOURS", default=4)
 MFA_CHALLENGE_MAX_ATTEMPTS = env.int("MFA_CHALLENGE_MAX_ATTEMPTS", default=5)
@@ -225,6 +239,8 @@ REST_FRAMEWORK = {
         "password_reset_ip": "10/hour",
         "register": "5/hour",
         "invitation_accept": "10/hour",
+        "invitation_preview": "30/hour",
+        "invitation_send": "30/hour",
         "refresh": "60/min",
         "reauth": "5/15min",
         "verify_ip": "30/min",
