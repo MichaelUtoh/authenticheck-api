@@ -30,6 +30,7 @@ from apps.identity.permissions import IsAuthenticatedSession
 from apps.identity.serializers import (
     LoginSerializer,
     MFATokenSerializer,
+    ProfileUpdateSerializer,
     RegisterSerializer,
     UserSerializer,
 )
@@ -436,7 +437,7 @@ class RefreshView(APIView):
 class MeView(APIView):
     permission_classes = [IsAuthenticatedSession]
 
-    def get(self, request):
+    def _profile(self, request):
         from apps.tenants.models import Membership
         from apps.tenants.serializers import MembershipSerializer, TenantSerializer
 
@@ -456,7 +457,35 @@ class MeView(APIView):
         if request.active_membership:
             data["active_tenant"] = TenantSerializer(request.active_membership.tenant).data
 
-        return Response(data)
+        return data
+
+    def get(self, request):
+        return Response(self._profile(request))
+
+    @extend_schema(
+        request=ProfileUpdateSerializer,
+        summary="Update the signed-in user's basic profile (currently full_name)",
+        tags=["Auth"],
+    )
+    def patch(self, request):
+        serializer = ProfileUpdateSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        user = request.user
+        changes = {
+            k: v for k, v in serializer.validated_data.items() if getattr(user, k) != v
+        }
+        if changes:
+            with transaction.atomic():
+                before = {k: getattr(user, k) for k in changes}
+                for k, v in changes.items():
+                    setattr(user, k, v)
+                user.save(update_fields=list(changes))
+                audit.record(
+                    action="auth.profile.updated", actor=user, before=before, after=changes
+                )
+            # The auth layer caches the user for 30 s; drop it so the next read is fresh.
+            session_service.invalidate_user_cache(user.pk)
+        return Response(self._profile(request))
 
 
 # ---------------------------------------------------------------------------

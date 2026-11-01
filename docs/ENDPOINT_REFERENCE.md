@@ -64,6 +64,7 @@ X-API-Key: ac_<token>
 | `POST` | `/auth/refresh` | 🌐 | Exchange refresh cookie for a new `access_token` |
 | `POST` | `/auth/logout` | 🔑 | Revoke session and clear refresh cookie |
 | `GET` | `/auth/me` | 🔑 | Current user profile, memberships, and active tenant |
+| `PATCH` | `/auth/me` | 🔑 | Update own profile. Body: `{ "full_name" }` (required, non-blank, max 255). Other fields (email, password) are ignored here. Returns the same payload as `GET /auth/me`. Audited |
 | `POST` | `/auth/mfa/setup` | 🔑 | Begin TOTP enrolment — returns provisioning URI for QR code |
 | `POST` | `/auth/mfa/confirm` | 🔑 | Confirm TOTP device with a 6-digit token |
 | `POST` | `/auth/mfa/verify` | 🌐 | Step 2 of MFA login (called after login returns `mfa_required: true`) |

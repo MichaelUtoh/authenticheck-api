@@ -33,6 +33,10 @@ class MFATokenSerializer(serializers.Serializer):
     token = serializers.RegexField(r"^\d{6}$", help_text="6-digit TOTP code.")
 
 
+class ProfileUpdateSerializer(serializers.Serializer):
+    full_name = serializers.CharField(max_length=255)  # trimmed and non-blank by default
+
+
 class UserSerializer(serializers.ModelSerializer):
     mfa_enabled = serializers.SerializerMethodField()
 

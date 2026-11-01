@@ -229,6 +229,50 @@ def test_me_returns_current_user(user, jwt_client):
     assert "amr" in response.data
 
 
+def test_patch_me_requires_auth(anon):
+    assert anon.patch("/api/v1/auth/me", {"full_name": "X"}, format="json").status_code == 401
+
+
+def test_patch_me_updates_full_name(user, jwt_client):
+    from apps.audit.models import AuditEvent
+
+    client, _, _ = jwt_client(user)
+    response = client.patch("/api/v1/auth/me", {"full_name": "  New Name "}, format="json")
+    assert response.status_code == 200
+    assert response.data["full_name"] == "New Name"
+    assert "memberships" in response.data
+    user.refresh_from_db()
+    assert user.full_name == "New Name"
+    assert AuditEvent.objects.filter(action="auth.profile.updated", actor=user).count() == 1
+
+
+def test_patch_me_unchanged_name_writes_no_audit(user, jwt_client):
+    from apps.audit.models import AuditEvent
+
+    client, _, _ = jwt_client(user)
+    for _ in range(2):
+        assert client.patch("/api/v1/auth/me", {"full_name": "Same Name"}, format="json").status_code == 200
+    assert AuditEvent.objects.filter(action="auth.profile.updated", actor=user).count() == 1
+
+
+@pytest.mark.parametrize("value", ["", "   ", "x" * 256])
+def test_patch_me_rejects_bad_name(user, jwt_client, value):
+    client, _, _ = jwt_client(user)
+    response = client.patch("/api/v1/auth/me", {"full_name": value}, format="json")
+    assert response.status_code == 400
+
+
+def test_patch_me_ignores_email_and_staff(user, jwt_client):
+    client, _, _ = jwt_client(user)
+    original = user.email
+    response = client.patch(
+        "/api/v1/auth/me", {"full_name": "A B", "email": "x@y.com", "is_staff": True}, format="json"
+    )
+    assert response.status_code == 200
+    user.refresh_from_db()
+    assert user.email == original and not user.is_staff
+
+
 # ---------------------------------------------------------------------------
 # Logout [EC-038]
 # ---------------------------------------------------------------------------
