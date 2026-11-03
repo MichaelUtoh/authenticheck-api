@@ -447,9 +447,9 @@ def test_resume_rejected_when_batch_is_no_longer_active(client, tenant, batch, o
     assert job.status == IssuanceJob.Status.PARTIAL  # untouched
 
 
-def test_resume_requires_owner_or_admin(tenant, batch, owner):
+def test_resume_denied_for_investigator_and_viewer(tenant, batch, owner):
     job = make_job(tenant, batch, 20, 5, IssuanceJob.Status.PARTIAL, owner)
-    for role in (Membership.Role.EDITOR, Membership.Role.VIEWER):
+    for role in (Membership.Role.INVESTIGATOR, Membership.Role.VIEWER):
         user = User.objects.create_user(f"{role}@batch.test", "a-long-test-password")
         Membership.objects.create(user=user, tenant=tenant, role=role)
         assert _client(user, tenant).post(f"{API}/issuance/jobs/{job.pk}/resume").status_code == 403

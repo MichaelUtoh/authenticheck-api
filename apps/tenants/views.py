@@ -245,7 +245,7 @@ class SupportContactView(APIView):
     summary="Change a member's role or product-submission permission",
 )
 class TenantMemberDetailView(APIView):
-    """Owner/admin may enable submission for editors; only the owner may change roles."""
+    """Owner/admin may enable submission for production/quality staff; only the owner may change roles."""
 
     permission_classes = [IsAuthenticated, HasActiveTenantMembership, IsOwnerOrAdmin]
 

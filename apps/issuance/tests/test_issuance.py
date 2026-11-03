@@ -126,18 +126,26 @@ def test_create_job_rejects_inactive_batch(owner, tenant, batch):
     assert response.data["error"]["code"] == "batch_not_active"
 
 
-def test_create_job_requires_owner_or_admin(tenant, batch):
-    viewer = User.objects.create_user("viewer@issuance.test", "a-long-test-password")
-    Membership.objects.create(user=viewer, tenant=tenant, role=Membership.Role.VIEWER)
+@pytest.mark.parametrize(
+    "role,expected",
+    [
+        (Membership.Role.VIEWER, 403),
+        (Membership.Role.INVESTIGATOR, 403),
+        (Membership.Role.PRODUCTION_QUALITY, 202),
+    ],
+)
+def test_create_job_role_access(tenant, batch, role, expected):
+    user = User.objects.create_user(f"{role}@issuance.test", "a-long-test-password")
+    Membership.objects.create(user=user, tenant=tenant, role=role)
     c = APIClient()
-    c.force_authenticate(user=viewer)
+    c.force_authenticate(user=user)
     c.credentials(HTTP_X_TENANT_ID=str(tenant.pk))
     response = c.post(
         "/api/v1/issuance/jobs",
         {"batch_id": str(batch.pk), "quantity": 5},
-        HTTP_IDEMPOTENCY_KEY="viewer-key-001",
+        HTTP_IDEMPOTENCY_KEY=f"{role}-key-001",
     )
-    assert response.status_code == 403
+    assert response.status_code == expected
 
 
 # ---------------------------------------------------------------------------

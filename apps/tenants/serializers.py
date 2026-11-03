@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Membership, Tenant
+from .models import LEGACY_ROLE_ALIASES, Membership, Tenant
 
 
 class TenantSerializer(serializers.ModelSerializer):
@@ -67,5 +67,11 @@ class SupportContactSerializer(serializers.ModelSerializer):
 
 
 class MembershipUpdateSerializer(serializers.Serializer):
-    role = serializers.ChoiceField(choices=["admin", "editor", "member", "viewer"], required=False)
+    role = serializers.ChoiceField(
+        choices=["admin", "production_quality", "investigator", "viewer", *LEGACY_ROLE_ALIASES],
+        required=False,
+    )
     can_submit_products = serializers.BooleanField(required=False)
+
+    def validate_role(self, value):
+        return LEGACY_ROLE_ALIASES.get(value, value)

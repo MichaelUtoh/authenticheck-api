@@ -1107,7 +1107,7 @@ Request is validated against the AT API key. Returns a USSD menu/response string
 }
 ```
 
-`role` values: `owner` · `admin` · `member` · `viewer`
+`role` values: `owner` · `admin` · `production_quality` · `investigator` · `viewer` (legacy `editor`/`member` are accepted on input and mapped to `production_quality`)
 
 ### Tenant object
 

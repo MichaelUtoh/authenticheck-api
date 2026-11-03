@@ -51,7 +51,7 @@ def client(owner, tenant):
 @pytest.fixture
 def editor(tenant):
     u = User.objects.create_user("editor@workflow.test", "a-long-test-password")
-    Membership.objects.create(user=u, tenant=tenant, role=Membership.Role.EDITOR)
+    Membership.objects.create(user=u, tenant=tenant, role=Membership.Role.PRODUCTION_QUALITY)
     return u
 
 

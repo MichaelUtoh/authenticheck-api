@@ -172,7 +172,7 @@ def test_login_multiple_memberships_returns_list_without_tid(anon, user):
     for name in ["Tenant A", "Tenant B"]:
         t = Tenant.objects.create(legal_name=name, status=Tenant.Status.APPROVED)
         Membership.objects.create(
-            user=user, tenant=t, role=Membership.Role.MEMBER, status=Membership.Status.ACTIVE
+            user=user, tenant=t, role=Membership.Role.PRODUCTION_QUALITY, status=Membership.Status.ACTIVE
         )
 
     response = anon.post(

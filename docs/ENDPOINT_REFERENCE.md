@@ -40,8 +40,8 @@ X-API-Key: ac_<token>
 | 🔑 | Requires `Authorization: Bearer <token>` |
 | 🏢 | Requires Bearer token **and** active approved tenant membership (`tid` in JWT) |
 | 👑 | Requires 🏢 + `owner` or `admin` role |
-| ✏️ | Requires 🏢 + `owner`, `admin` or `editor` role (catalogue drafts and batch entry) |
-| 📤 | Requires 🏢 + `owner` or `admin`, or an `editor` with `can_submit_products` enabled |
+| ✏️ | Requires 🏢 + `owner`, `admin` or `production_quality` role (catalogue drafts and batch entry) |
+| 📤 | Requires 🏢 + `owner` or `admin`, or a `production_quality` member with `can_submit_products` enabled |
 | 🛡️ | Requires `is_staff=True` + MFA verified |
 
 ---
@@ -88,7 +88,7 @@ X-API-Key: ac_<token>
 | `POST` | `/tenants/register` | 🔑 | Register a new manufacturer tenant (creator becomes `owner`) |
 | `GET` | `/tenants/me` | 🏢 | Active tenant details |
 | `GET` | `/tenants/me/members` | 👑 | List active tenant members (`email`, `full_name`, `role`, `can_submit_products`) |
-| `PATCH` | `/tenants/me/members/{id}` | 👑 | Enable `can_submit_products` for an editor. Changing `role` (`admin`, `editor`, `member`, `viewer`) is **owner only**; the owner's own role cannot change |
+| `PATCH` | `/tenants/me/members/{id}` | 👑 | Enable `can_submit_products` for production/quality staff. Changing `role` (`admin`, `production_quality`, `investigator`, `viewer`; legacy `editor`/`member` are accepted and stored as `production_quality`) is **owner only**; the owner's own role cannot change |
 | `GET` | `/tenants/me/support-contact` | 🏢 | Default consumer support contact (`support_email`, `support_phone`, `support_url`) |
 | `PATCH` | `/tenants/me/support-contact` | 👑 | Update the support contact (audited). Shown on `/verify` unless a product overrides it |
 | `GET` | `/tenants/me/release-gates` | 🏢 | Industry release-gate state (cosmetics `live`, pharmaceuticals `locked`) |
@@ -101,11 +101,11 @@ X-API-Key: ac_<token>
 
 ## Tenants — Invitations
 
-Owners and admins invite people by email with a role. Only the **owner** can invite or manage **admins**. The `owner` role can't be granted by invitation. Roles: `admin`, `editor`, `member`, `viewer`. The single-use link is only ever sent by email (never returned by the API), is stored hashed, and expires after `INVITATION_TTL_DAYS` (default 7). The email links to `{FRONTEND_URL}/accept-invite?token=…`.
+Owners and admins invite people by email with a role. Only the **owner** can invite or manage **admins**. The `owner` role can't be granted by invitation. Roles: `admin`, `production_quality`, `investigator`, `viewer` (legacy `editor` and `member` are accepted and mapped to `production_quality`). `production_quality` can also create and resume code issuance jobs; `investigator` and `viewer` are read-only for now (flags and cases are not built yet). The single-use link is only ever sent by email (never returned by the API), is stored hashed, and expires after `INVITATION_TTL_DAYS` (default 7). The email links to `{FRONTEND_URL}/accept-invite?token=…`.
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `POST` | `/tenants/me/invitations` | 👑 | Invite. Body: `{ "email", "role", "can_submit_products"? }` (`can_submit_products` is for editors only). `409 already_member`, `409 invitation_pending`. Rate-limited (30/hour per user) |
+| `POST` | `/tenants/me/invitations` | 👑 | Invite. Body: `{ "email", "role", "can_submit_products"? }` (`can_submit_products` is for `production_quality` only). `409 already_member`, `409 invitation_pending`. Rate-limited (30/hour per user) |
 | `GET` | `/tenants/me/invitations` | 👑 | List. `status` = `pending` (default), `accepted`, `revoked`, `expired` or `all` |
 | `POST` | `/tenants/me/invitations/{id}/resend` | 👑 | Issue a new link (the old one stops working) and restart the expiry. Pending invitations only |
 | `DELETE` | `/tenants/me/invitations/{id}` | 👑 | Revoke a pending invitation |

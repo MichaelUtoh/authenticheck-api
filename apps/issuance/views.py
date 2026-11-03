@@ -21,7 +21,7 @@ from apps.core.exceptions import ApiError
 from apps.core.idempotency import run_idempotent
 from apps.core.pagination import StandardPagination
 from apps.core.tenancy import get_current_tenant_id
-from apps.tenants.permissions import HasActiveTenantMembership, IsOwnerOrAdmin
+from apps.tenants.permissions import CanIssueCodes, HasActiveTenantMembership, IsOwnerOrAdmin
 
 from .models import Code, IssuanceJob
 from .serializers import (
@@ -100,7 +100,7 @@ class IssuanceJobListCreateView(APIView):
         return Response(IssuanceJobSerializer(jobs, many=True).data)
 
     def post(self, request):
-        _require_owner_or_admin(request, self)
+        _require_can_issue_codes(request, self)
         scope = f"{request.user.pk}:{request.active_tenant_id}:issuance.create"
         return run_idempotent(request, scope=scope, handler=lambda: self._create(request))
 
@@ -161,7 +161,7 @@ class IssuanceJobDetailView(APIView):
     ),
 )
 class IssuanceJobResumeView(APIView):
-    permission_classes = _WRITE_PERMS
+    permission_classes = [IsAuthenticated, HasActiveTenantMembership, CanIssueCodes]
 
     def post(self, request, pk):
         if "Idempotency-Key" in request.headers:
@@ -411,8 +411,8 @@ class BatchCodeDeactivateView(APIView):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _require_owner_or_admin(request, view):
-    perm = IsOwnerOrAdmin()
+def _require_can_issue_codes(request, view):
+    perm = CanIssueCodes()
     if not perm.has_permission(request, view):
         raise PermissionDenied(perm.message)
 

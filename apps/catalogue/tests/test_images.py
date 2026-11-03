@@ -248,7 +248,7 @@ def test_viewer_cannot_upload(tenant):
 
 
 def test_editor_can_upload(tenant):
-    editor = _client(Membership.Role.EDITOR, tenant, "editor@image.test")
+    editor = _client(Membership.Role.PRODUCTION_QUALITY, tenant, "editor@image.test")
     assert upload(editor, make_image()).status_code == 201
 
 

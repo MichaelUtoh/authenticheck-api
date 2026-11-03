@@ -41,7 +41,7 @@ from apps.identity.throttles import (
     InvitationSendThrottle,
 )
 
-from .models import Membership, Tenant
+from .models import LEGACY_ROLE_ALIASES, Membership, Tenant
 from .permissions import HasActiveTenantMembership, IsOwnerOrAdmin
 
 logger = logging.getLogger(__name__)
@@ -49,8 +49,8 @@ User = get_user_model()
 
 INVITABLE_ROLES = (
     Membership.Role.ADMIN,
-    Membership.Role.EDITOR,
-    Membership.Role.MEMBER,
+    Membership.Role.PRODUCTION_QUALITY,
+    Membership.Role.INVESTIGATOR,
     Membership.Role.VIEWER,
 )
 _MIN_PASSWORD_LEN = 10
@@ -65,16 +65,21 @@ _MANAGE_PERMS = [IsAuthenticated, HasActiveTenantMembership, IsOwnerOrAdmin]
 
 class InvitationCreateSerializer(serializers.Serializer):
     email = serializers.EmailField(max_length=254)
-    role = serializers.ChoiceField(choices=[r.value for r in INVITABLE_ROLES])
+    role = serializers.ChoiceField(
+        choices=[r.value for r in INVITABLE_ROLES] + list(LEGACY_ROLE_ALIASES)
+    )
     can_submit_products = serializers.BooleanField(default=False)
+
+    def validate_role(self, value):
+        return LEGACY_ROLE_ALIASES.get(value, value)
 
     def validate_email(self, value):
         return value.lower().strip()
 
     def validate(self, attrs):
-        if attrs["can_submit_products"] and attrs["role"] != Membership.Role.EDITOR:
+        if attrs["can_submit_products"] and attrs["role"] != Membership.Role.PRODUCTION_QUALITY:
             raise serializers.ValidationError(
-                {"can_submit_products": ["Only applies to the editor role."]}
+                {"can_submit_products": ["Only applies to the production_quality role."]}
             )
         return attrs
 
@@ -212,8 +217,9 @@ class InvitationListCreateView(APIView):
     @extend_schema(
         summary="Invite someone to the tenant with a role",
         description=(
-            "Emails a single-use link. Roles: `admin` (owner only), `editor`, `member`, `viewer`. "
-            "`can_submit_products` applies to editors. The token is only ever sent by email."
+            "Emails a single-use link. Roles: `admin` (owner only), `production_quality`, `investigator`, `viewer` "
+            "(legacy `editor` and `member` map to `production_quality`). "
+            "`can_submit_products` applies to production_quality. The token is only ever sent by email."
         ),
         request=InvitationCreateSerializer,
         responses={201: InvitationSerializer},

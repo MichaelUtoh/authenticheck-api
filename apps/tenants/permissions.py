@@ -72,9 +72,9 @@ class IsOwnerOrAdmin(BasePermission):
 
 
 class CanEditCatalogue(BasePermission):
-    """Owner, admin and editor may create and edit drafts and enter batch data."""
+    """Owner, admin and production/quality staff may create and edit drafts and enter batch data."""
 
-    message = "Owner, admin or editor role required."
+    message = "Owner, admin or production/quality role required."
 
     def has_permission(self, request, view):
         membership = getattr(request, "active_membership", None)
@@ -83,12 +83,28 @@ class CanEditCatalogue(BasePermission):
         return membership.role in (
             Membership.Role.OWNER,
             Membership.Role.ADMIN,
-            Membership.Role.EDITOR,
+            Membership.Role.PRODUCTION_QUALITY,
+        )
+
+
+class CanIssueCodes(BasePermission):
+    """Owner, admin and production/quality staff may issue codes and resume issuance jobs."""
+
+    message = "Owner, admin or production/quality role required to issue codes."
+
+    def has_permission(self, request, view):
+        membership = getattr(request, "active_membership", None)
+        if membership is None:
+            return False
+        return membership.role in (
+            Membership.Role.OWNER,
+            Membership.Role.ADMIN,
+            Membership.Role.PRODUCTION_QUALITY,
         )
 
 
 class CanSubmitProducts(BasePermission):
-    """Owner and admin always; an editor only when can_submit_products is enabled."""
+    """Owner and admin always; production/quality staff only when can_submit_products is enabled."""
 
     message = "You do not have permission to submit products for review."
 
@@ -98,4 +114,6 @@ class CanSubmitProducts(BasePermission):
             return False
         if membership.role in (Membership.Role.OWNER, Membership.Role.ADMIN):
             return True
-        return membership.role == Membership.Role.EDITOR and membership.can_submit_products
+        return (
+            membership.role == Membership.Role.PRODUCTION_QUALITY and membership.can_submit_products
+        )

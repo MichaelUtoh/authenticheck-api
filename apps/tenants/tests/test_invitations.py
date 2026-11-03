@@ -63,7 +63,7 @@ def client(owner, tenant):
     return _client(owner, tenant)
 
 
-def invite(client, email="new@invite.test", role="editor", **extra):
+def invite(client, email="new@invite.test", role="production_quality", **extra):
     return client.post(
         f"{API}/tenants/me/invitations", {"email": email, "role": role, **extra}, format="json"
     )
@@ -86,11 +86,11 @@ def accept(token, client=None, **body):
 # ---------------------------------------------------------------------------
 
 
-def test_owner_invites_an_editor_and_the_link_is_emailed(client, tenant):
-    resp = invite(client, "Editor@Invite.test", "editor", can_submit_products=True)
+def test_owner_invites_production_quality_and_the_link_is_emailed(client, tenant):
+    resp = invite(client, "Editor@Invite.test", "production_quality", can_submit_products=True)
     assert resp.status_code == 201, resp.data
     assert resp.data["email"] == "editor@invite.test"  # normalised
-    assert resp.data["role"] == "editor" and resp.data["can_submit_products"] is True
+    assert resp.data["role"] == "production_quality" and resp.data["can_submit_products"] is True
     assert resp.data["status"] == "pending"
     assert resp.data["invited_by"]["name"] == "Owner"
     assert "token" not in resp.data  # the token only ever travels by email
@@ -99,7 +99,7 @@ def test_owner_invites_an_editor_and_the_link_is_emailed(client, tenant):
     message = mail.outbox[0]
     assert message.to == ["editor@invite.test"]
     assert "Invite Cosmetics" in message.subject
-    assert "Editor" in message.body and "Owner" in message.body
+    assert "Production/Quality" in message.body and "Owner" in message.body
     assert "/accept-invite?token=" in message.body
 
 
@@ -124,7 +124,7 @@ def test_creating_an_invitation_is_audited(client):
     assert event.after["email"] == "new@invite.test" and event.after["role"] == "viewer"
 
 
-@pytest.mark.parametrize("role", ["editor", "member", "viewer", "admin"])
+@pytest.mark.parametrize("role", ["production_quality", "investigator", "viewer", "admin"])
 def test_owner_can_invite_every_invitable_role(client, role):
     assert invite(client, role=role).status_code == 201
 
@@ -134,20 +134,20 @@ def test_cannot_invite_an_owner_or_unknown_role(client):
     assert invite(client, role="superuser").status_code == 400
 
 
-def test_can_submit_products_only_applies_to_editors(client):
+def test_can_submit_products_only_applies_to_production_quality(client):
     resp = invite(client, role="viewer", can_submit_products=True)
     assert resp.status_code == 400
     assert "can_submit_products" in resp.data["error"]["details"]
 
 
-def test_admin_can_invite_editors_but_not_admins(tenant):
+def test_admin_can_invite_production_quality_but_not_admins(tenant):
     admin = _client(_member(tenant, "admin@invite.test", Membership.Role.ADMIN), tenant)
-    assert invite(admin, "e@invite.test", "editor").status_code == 201
+    assert invite(admin, "e@invite.test", "production_quality").status_code == 201
     forbidden = invite(admin, "a@invite.test", "admin")
     assert forbidden.status_code == 403
 
 
-@pytest.mark.parametrize("role", [Membership.Role.EDITOR, Membership.Role.MEMBER, Membership.Role.VIEWER])
+@pytest.mark.parametrize("role", [Membership.Role.PRODUCTION_QUALITY, Membership.Role.INVESTIGATOR, Membership.Role.VIEWER])
 def test_lower_roles_cannot_invite(tenant, role):
     user = _client(_member(tenant, f"{role}@invite.test", role), tenant)
     assert invite(user).status_code == 403
@@ -279,11 +279,11 @@ def test_admin_cannot_manage_admin_invitations(client, tenant):
 
 
 def test_preview_shows_what_the_invitee_needs(client):
-    invite(client, "newbie@invite.test", "editor")
+    invite(client, "newbie@invite.test", "production_quality")
     resp = APIClient().get(f"{API}/invitations/preview", {"token": emailed_token()})
     assert resp.status_code == 200
     assert resp.data["email"] == "newbie@invite.test"
-    assert resp.data["role"] == "editor" and resp.data["role_label"] == "Editor"
+    assert resp.data["role"] == "production_quality" and resp.data["role_label"] == "Production/Quality"
     assert resp.data["tenant_name"] == "Invite Cosmetics"
     assert resp.data["invited_by"] == "Owner"
     assert resp.data["has_account"] is False
@@ -314,10 +314,10 @@ def test_preview_expired_is_410(client):
 
 
 def test_new_person_accepts_creates_account_and_membership(client, tenant):
-    invite(client, "fresh@invite.test", "editor", can_submit_products=True)
+    invite(client, "fresh@invite.test", "production_quality", can_submit_products=True)
     resp = accept(emailed_token(), password=PASSWORD, full_name="Funmi Adeyemi")
     assert resp.status_code == 201, resp.data
-    assert resp.data["account_created"] is True and resp.data["role"] == "editor"
+    assert resp.data["account_created"] is True and resp.data["role"] == "production_quality"
     assert resp.data["tenant_name"] == "Invite Cosmetics"
 
     user = User.objects.get(email="fresh@invite.test")
@@ -325,7 +325,7 @@ def test_new_person_accepts_creates_account_and_membership(client, tenant):
     assert user.email_verified_at is not None
     assert user.check_password(PASSWORD)
     membership = Membership.objects.get(user=user, tenant=tenant)
-    assert membership.role == "editor" and membership.can_submit_products is True
+    assert membership.role == "production_quality" and membership.can_submit_products is True
     assert membership.status == Membership.Status.ACTIVE
     assert membership.invited_by.email == "owner@invite.test"
     assert Invitation.objects.get().status == Invitation.Status.ACCEPTED
@@ -407,13 +407,13 @@ def test_existing_user_must_log_in_first(client):
 
 def test_existing_user_accepts_when_logged_in_as_that_email(client, tenant):
     known = User.objects.create_user("known@invite.test", PASSWORD)
-    invite(client, "known@invite.test", "member")
+    invite(client, "known@invite.test", "investigator")
     signed_in = APIClient()
     signed_in.force_authenticate(user=known)
     resp = accept(emailed_token(), client=signed_in)
     assert resp.status_code == 201, resp.data
     assert resp.data["account_created"] is False
-    assert Membership.objects.get(user=known, tenant=tenant).role == "member"
+    assert Membership.objects.get(user=known, tenant=tenant).role == "investigator"
     known.refresh_from_db()
     assert known.check_password(PASSWORD)  # untouched
 
@@ -445,13 +445,13 @@ def test_revoked_member_is_reactivated_with_the_new_role(client, tenant):
     Membership.objects.filter(user=old, tenant=tenant).update(
         status=Membership.Status.REVOKED, revoked_at=timezone.now()
     )
-    invite(client, "returning@invite.test", "editor")
+    invite(client, "returning@invite.test", "production_quality")
     signed_in = APIClient()
     signed_in.force_authenticate(user=old)
     assert accept(emailed_token(), client=signed_in).status_code == 201
     membership = Membership.objects.get(user=old, tenant=tenant)
     assert membership.status == Membership.Status.ACTIVE
-    assert membership.role == "editor"
+    assert membership.role == "production_quality"
     assert membership.revoked_at is None
 
 
@@ -468,10 +468,10 @@ def test_email_match_is_case_insensitive(client, tenant):
 # ---------------------------------------------------------------------------
 
 
-def test_invited_editor_gets_the_submit_permission_only_if_granted(client, tenant):
-    invite(client, "can@invite.test", "editor", can_submit_products=True)
+def test_invited_production_quality_gets_the_submit_permission_only_if_granted(client, tenant):
+    invite(client, "can@invite.test", "production_quality", can_submit_products=True)
     accept(emailed_token(), password=PASSWORD)
-    invite(client, "cannot@invite.test", "editor")
+    invite(client, "cannot@invite.test", "production_quality")
     accept(emailed_token(), password=PASSWORD)
     assert Membership.objects.get(user__email="can@invite.test").can_submit_products is True
     assert Membership.objects.get(user__email="cannot@invite.test").can_submit_products is False
@@ -492,3 +492,23 @@ def test_sending_is_rate_limited(client, settings):
                                              "invitation_send": "3/hour"}
     codes = [invite(client, f"u{i}@invite.test").status_code for i in range(5)]
     assert codes == [201, 201, 201, 429, 429]
+
+
+@pytest.mark.parametrize("legacy", ["editor", "member"])
+def test_legacy_role_names_map_to_production_quality(client, legacy):
+    resp = invite(client, role=legacy)
+    assert resp.status_code == 201
+    assert resp.data["role"] == "production_quality"
+
+
+def test_can_submit_products_with_legacy_editor_name(client):
+    resp = invite(client, role="editor", can_submit_products=True)
+    assert resp.status_code == 201 and resp.data["can_submit_products"] is True
+
+
+def test_member_update_accepts_legacy_name_and_stores_new_role(client, tenant):
+    m = Membership.objects.get(user=_member(tenant, "legacy@invite.test", Membership.Role.VIEWER), tenant=tenant)
+    resp = client.patch(f"{API}/tenants/me/members/{m.pk}", {"role": "editor"}, format="json")
+    assert resp.status_code == 200
+    m.refresh_from_db()
+    assert m.role == Membership.Role.PRODUCTION_QUALITY

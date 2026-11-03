@@ -30,6 +30,10 @@ class Tenant(BaseModel):
         return self.trading_name or self.legal_name
 
 
+# Role names used before the persona-based roles; still accepted by the API and mapped on input.
+LEGACY_ROLE_ALIASES = {"editor": "production_quality", "member": "production_quality"}
+
+
 class Membership(BaseModel):
     """A user's role within a tenant. One person can belong to many tenants (EC-039/EC-040).
     The active tenant is set per-request via the token tid claim, validated against this table."""
@@ -37,8 +41,8 @@ class Membership(BaseModel):
     class Role(models.TextChoices):
         OWNER = "owner", "Owner"
         ADMIN = "admin", "Admin"
-        EDITOR = "editor", "Editor"
-        MEMBER = "member", "Member"
+        PRODUCTION_QUALITY = "production_quality", "Production/Quality"
+        INVESTIGATOR = "investigator", "Investigator"
         VIEWER = "viewer", "Viewer"
 
     class Status(models.TextChoices):
@@ -50,7 +54,7 @@ class Membership(BaseModel):
     )
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="memberships")
     role = models.CharField(max_length=20, choices=Role.choices)
-    # Editors may submit products for review only when an owner/admin enables it.
+    # Production/quality staff may submit products for review only when an owner/admin enables it.
     can_submit_products = models.BooleanField(default=False)
     status = models.CharField(
         max_length=10, choices=Status.choices, default=Status.ACTIVE, db_index=True
