@@ -78,13 +78,10 @@ class ATUssdView(View):
         from apps.catalogue.models import Batch
         from apps.issuance.models import Code
 
-        try:
-            code = (
-                Code.unscoped
-                .select_related("batch__product__brand")
-                .get(code=code_str)
-            )
-        except Code.DoesNotExist:
+        from apps.issuance.codes import find_code
+
+        code = find_code(code_str, Code.unscoped.select_related("batch__product__brand"))
+        if code is None:
             return HttpResponse(
                 "END Code not found.\nThis product may not be registered or may be counterfeit.",
                 content_type="text/plain",

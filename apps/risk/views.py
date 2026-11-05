@@ -11,6 +11,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.audit import services as audit
+from apps.issuance.codes import find_code
 from apps.issuance.models import Code
 from apps.tenants.permissions import HasActiveTenantMembership, IsOwnerOrAdmin
 
@@ -61,7 +62,7 @@ class ConsumerReportView(APIView):
         ip = _get_client_ip(request)
         code_str = data["code_str"]
 
-        code = Code.unscoped.filter(code=code_str).select_related("batch").first()
+        code = find_code(code_str, Code.unscoped.select_related("batch"))
 
         report = ConsumerReport.objects.create(
             code_str=code_str,

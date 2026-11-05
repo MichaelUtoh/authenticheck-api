@@ -1,12 +1,14 @@
 import logging
 
 from drf_spectacular.utils import extend_schema
+from django.utils import timezone
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.catalogue import workflow
 from apps.catalogue.models import Batch
+from apps.issuance.codes import clean_code, find_code
 from apps.issuance.models import Code
 
 from .models import ScanEvent
@@ -39,18 +41,17 @@ class VerifyView(APIView):
         ip = _get_client_ip(request)
         ua = request.META.get("HTTP_USER_AGENT", "")[:500]
 
-        try:
-            code = (
-                Code.unscoped
-                .select_related(
-                    "batch__product__brand",
-                    "batch__product__reference_image",
-                    "batch__product__tenant",
-                    "tenant",
-                )
-                .get(code=code_str)
-            )
-        except Code.DoesNotExist:
+        code_str = clean_code(code_str)
+        code = find_code(
+            code_str,
+            Code.unscoped.select_related(
+                "batch__product__brand",
+                "batch__product__reference_image",
+                "batch__product__tenant",
+                "tenant",
+            ),
+        )
+        if code is None:
             _record(code_str, None, ScanEvent.Result.NOT_FOUND, ip, ua)
             return Response(
                 {"result": "not_found", "detail": "Code not found."},
@@ -85,6 +86,11 @@ class VerifyView(APIView):
             if batch.status == Batch.Status.RECALLED
             else ScanEvent.Result.GENUINE
         )
+        now = timezone.now()
+        # Atomic: exactly one concurrent first check wins.
+        is_first = Code.unscoped.filter(pk=code.pk, first_checked_at__isnull=True).update(first_checked_at=now) == 1
+        first_checked_at = now if is_first else Code.unscoped.values_list("first_checked_at", flat=True).get(pk=code.pk)
+
         scan = _record(code_str, code, result, ip, ua)
         _evaluate_risk(scan)
         _fire_verified(scan, code, result)
@@ -95,12 +101,16 @@ class VerifyView(APIView):
         payload = {
             "result": result,
             "code": code.code,
+            "is_first_check": is_first,
+            "checked_at": now,
             "product": consumer["product"],
             "batch": {**consumer["batch"], "status": batch.status},
             "manufacturer": {
                 "name": code.tenant.legal_name,
             },
         }
+        if not is_first:
+            payload["first_checked_at"] = first_checked_at
         if "support_contact" in consumer:
             payload["support_contact"] = consumer["support_contact"]
 

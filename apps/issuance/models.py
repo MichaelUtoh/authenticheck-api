@@ -57,15 +57,21 @@ class Code(TenantScopedModel):
     """An individual unique authentication code tied to a production batch.
 
     `code` is globally unique (not just per-tenant) because Phase 4 looks it up
-    without knowing the tenant upfront. Generated with 128 bits of entropy so
-    collisions are negligible even at 10 M+ codes.
+    without knowing the tenant upfront. Issued as 12 secure-random characters
+    (see codes.py); collisions are handled by the unique constraint and a retry.
     """
 
     class Status(models.TextChoices):
         ACTIVE = "active", "Active"
         DEACTIVATED = "deactivated", "Deactivated"
 
-    code = models.CharField(max_length=22, unique=True, db_index=True)
+    # 12-char consumer code (see codes.py); 16 leaves headroom.
+    code = models.CharField(max_length=16, unique=True, db_index=True)
+    # Pre-Nov-2026 22-char token, kept only so already-printed codes still resolve
+    # (and so migration 0005 can be reversed). Null for every newly issued code.
+    legacy_code = models.CharField(max_length=22, unique=True, null=True, blank=True, editable=False)
+    # Set once, atomically, by the first genuine public check (never cleared).
+    first_checked_at = models.DateTimeField(null=True, blank=True)
     batch = models.ForeignKey(
         "catalogue.Batch", on_delete=models.PROTECT, related_name="codes"
     )

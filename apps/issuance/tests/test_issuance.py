@@ -66,7 +66,7 @@ def done_job(owner, tenant, batch):
         for i in range(5):
             Code.objects.create(
                 tenant=tenant,
-                code=f"testcode{i:013}",
+                code=f"testcode{i:04}",
                 batch=batch,
                 product=batch.product,
                 issuance_job=job,
@@ -386,7 +386,7 @@ def test_codes_from_other_tenant_not_visible(client, done_job):
         for i in range(3):
             Code.objects.create(
                 tenant=other_tenant,
-                code=f"othercode{i:013}",
+                code=f"othercod{i:04}",
                 batch=other_batch,
                 product=other_product,
                 issuance_job=other_job,

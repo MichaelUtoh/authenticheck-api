@@ -231,3 +231,52 @@ def test_scan_event_cannot_be_deleted(active_code):
     )
     with pytest.raises(ValueError):
         event.delete()
+
+
+# ---------------------------------------------------------------------------
+# Code normalisation (VER-10)
+# ---------------------------------------------------------------------------
+
+
+def test_verify_ignores_case_dashes_and_spaces(client, active_code):
+    # stored "VRFCODE0000001"
+    for typed in ("vrfcode0000001", "VRFC-ODE0-0000-01", " vrfcode 0000001 "):
+        resp = client.get(URL.format(code=typed))
+        assert resp.status_code == 200, typed
+        assert resp.json()["code"] == "VRFCODE0000001"
+
+
+def test_verify_legacy_mixed_case_code_still_exact(client, tenant, batch, active_code):
+    with tenant_context(tenant.pk):
+        Code.objects.create(
+            tenant=tenant, code="7KQ2M9XW4PRT", legacy_code="aB3_x-Qz9", batch=batch,
+            product=batch.product, issuance_job=active_code.issuance_job,
+        )
+    resp = client.get(URL.format(code="aB3_x-Qz9"))
+    assert resp.status_code == 200
+    assert resp.json()["code"] == "7KQ2M9XW4PRT"
+    # Different case of a case-sensitive legacy code is a different (unknown) code.
+    assert client.get(URL.format(code="AB3_X-QZ9")).status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# First vs repeat check (VER-15)
+# ---------------------------------------------------------------------------
+
+
+def test_first_then_repeat_check(client, active_code):
+    first = client.get(URL.format(code="VRFCODE0000001")).json()
+    assert first["is_first_check"] is True
+    assert "first_checked_at" not in first
+    assert first["checked_at"]
+
+    second = client.get(URL.format(code="VRFCODE0000001")).json()
+    assert second["is_first_check"] is False
+    assert second["first_checked_at"] == first["checked_at"]
+    assert second["checked_at"] >= first["checked_at"]
+
+
+def test_unknown_code_does_not_mark_anything(client, active_code):
+    assert client.get(URL.format(code="NOPE")).status_code == 404
+    active_code.refresh_from_db()
+    assert active_code.first_checked_at is None

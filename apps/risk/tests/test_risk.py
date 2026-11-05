@@ -397,3 +397,17 @@ def test_cases_scoped_to_tenant(client, tenant):
     assert response.status_code == 200
     assert len(response.data) == 1
     assert response.data[0]["title"] == "Our Case"
+
+
+def test_submit_report_keeps_case_and_links_mixed_case_code(tenant, batch, active_code):
+    with tenant_context(tenant.pk):
+        Code.objects.create(
+            tenant=tenant, code="aB3_x-Qz9", batch=batch,
+            product=batch.product, issuance_job=active_code.issuance_job,
+        )
+    c = APIClient()
+    resp = c.post("/api/v1/reports", {"code_str": " aB3_x-Qz9 ", "description": "Odd packaging."})
+    assert resp.status_code == 201
+    report = ConsumerReport.objects.get(pk=resp.json()["id"])
+    assert report.code_str == "aB3_x-Qz9"
+    assert report.code is not None and report.code.code == "aB3_x-Qz9"

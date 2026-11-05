@@ -9,6 +9,11 @@ class ConsumerReportCreateSerializer(serializers.Serializer):
     contact_email = serializers.EmailField(required=False, allow_blank=True, default="")
     country_code = serializers.CharField(max_length=3, required=False, allow_blank=True, default="")
 
+    def validate_code_str(self, value):
+        # Keep the code as typed (trimmed); matching is done by issuance.codes.find_code.
+        # A bare .upper() here broke reports against case-sensitive codes.
+        return value.strip()
+
     def validate_country_code(self, value):
         return value.upper()
 

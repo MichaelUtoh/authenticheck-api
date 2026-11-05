@@ -23,6 +23,7 @@ from apps.core.pagination import StandardPagination
 from apps.core.tenancy import get_current_tenant_id
 from apps.tenants.permissions import CanIssueCodes, HasActiveTenantMembership, IsOwnerOrAdmin
 
+from .codes import find_code
 from .models import Code, IssuanceJob
 from .serializers import (
     CodeSerializer,
@@ -334,9 +335,8 @@ class CodeDeactivateView(APIView):
     permission_classes = _WRITE_PERMS
 
     def post(self, request, code_str):
-        try:
-            code = Code.unscoped.get(code=code_str, tenant_id=request.active_tenant_id)
-        except Code.DoesNotExist:
+        code = find_code(code_str, Code.unscoped.filter(tenant_id=request.active_tenant_id))
+        if code is None:
             raise NotFound("Code not found.")
 
         if code.status == Code.Status.DEACTIVATED:

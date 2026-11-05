@@ -3,6 +3,7 @@
 One living list of everything the frontend needs from the backend that `ENDPOINT_REFERENCE.md` does not yet give it, grouped by area. It is meant to be **kept and edited**, not rewritten each time.
 
 - Last reviewed against `ENDPOINT_REFERENCE.md`: **2026-10-30**
+- Section 6 (public verification) updated **2026-11-05** after reading the backend source (`apps/issuance/tasks.py`, `apps/verification/views.py`): see 6.1 and 6.2.
 - Frontend state at that date: **Products tab built** against the endpoints below. Batches & codes and Investigations are still on sample data; their detailed specs stay in their own docs and are indexed in [section 5](#5-batches--codes) and [section 8](#8-investigations).
 
 ---
@@ -194,6 +195,35 @@ Consumer-facing rules that depend on product data. The public page itself is not
 | VER-6 | `consumer-preview` for a never-approved product: return `404`, or `200` with a flag `{ approved: false, ... }` and the draft values? The UI handles `404` as "Nothing to preview yet". | Decision | Open |
 | VER-7 | Never return who checked, where, flags or cases (design rule). | **Required** | Done (per reference) |
 
+### 6.1 Product code format (blocker)
+
+The public checker (`/`, `/verify/{code}`) is built for **12-character codes**, e.g. `7KQ2-M9XW-4PRT`, typed or scanned by consumers. Today the backend issues **22-character** codes (`secrets.token_urlsafe(16)`: letters in both cases, digits, `-` and `_`; `Code.code` is `max_length=22`) and `GET /verify/{code}` matches them **exactly** (`.get(code=code_str)`), so case, dashes and spaces all change the result. Until this is fixed, every real code fails the frontend's format check, and any code that did reach the API would come back `404` after the frontend upper-cases it.
+
+| ID | Requirement | Priority | Status |
+|---|---|---|---|
+| VER-8 | **Issue 12-character codes.** Generate from a secure random source (`secrets.choice`, not a derived or sequential value), unique across all tenants as today. Replace `secrets.token_urlsafe(16)` in `issuance/tasks.py` (both the batch path and the collision-retry path). Collision handling stays. | **Required** | Done 2026-11-05 (`generate_code()` in `apps/issuance/codes.py`) |
+| VER-9 | **Alphabet.** Agree the exact character set; the frontend validates against it. Recommendation: 32 unambiguous characters (Crockford Base32, or `A–Z` and `2–9` without `I L O U`), which gives about 2^60 codes at 12 characters. If `0`/`O` and `1`/`I` are both allowed, the frontend must not auto-correct them. **Optional extension:** a check character (ISO 7064 / Luhn-style) as the 12th character, so typos are caught before a lookup is recorded. | Decision | Decided 2026-11-05: 30 symbols `23456789` + `ABCDEFGHJKMNPQRSTVWXYZ` (no `0 O 1 I L U`), 11 random + 1 Luhn mod-30 check character; no auto-correction. `is_valid_format()` is the reference validator. |
+| VER-10 | **Normalise before every lookup:** trim, remove spaces and `-`, upper-case. Apply it in `GET /verify/{code}`, `POST /reports` (`code_str`), `POST /issuance/codes/{code}/deactivate`, and the GS1 redirect (VER-13), through one shared helper. Store codes canonically (upper-case, no dashes). The frontend shows and links codes as `XXXX-XXXX-XXXX`, and print exports should use the same grouping. Also applies to the Africa's Talking USSD lookup. | **Required** | Partly done 2026-11-05: `apps/issuance/codes.py` `find_code()` is used by verify, reports, deactivate and USSD (exact input first, then upper-case with spaces/dashes removed, so legacy 22-char codes still resolve). Canonical storage waits on VER-8/9/11. |
+| VER-11 | **Schema and existing data.** Migration for `Code.code` (`max_length` 12, or 16 for headroom) and for `code_str` on `ScanEvent` and the risk report model (these hold user input, so keep them long enough for malformed values). **Decision:** what happens to codes already issued at 22 characters: regenerate (fine if only test data), or keep them resolvable through a legacy exact-match fallback. | **Required** | **Converted** 2026-11-05: migrations 0004-0006 give every existing code a new 12-char code, keep the old value in `Code.legacy_code` (exact, case-sensitive match still resolves; reversible), and shrink `Code.code` to 16. Drop `legacy_code` later once no old printed codes remain. `ScanEvent.code_str` and report `code_str` stay 22 (user input). |
+| VER-12 | `risk/serializers.py` already upper-cases `code_str` on reports. That was wrong for mixed-case codes and becomes correct once VER-8 lands; make it use the VER-10 helper instead of a bare `.upper()`. | **Required** | Done 2026-11-05 (the `.upper()` is gone; reports now link to mixed-case codes) |
+| VER-13 | **GS1 Digital Link** `GET /01/{gtin}/21/{serial}` redirects to `/verify/{serial}`. Confirm that `serial` is the 12-character code (not a longer GS1 serial) and normalise it the same way. If GS1 serials will be longer, say so now. | Decision | Open |
+| VER-14 | **Malformed input.** Today any string records a `not_found` scan, so typos and bots create noise in analytics and risk rules. Suggested: input that fails the VER-9 format returns `400` with `{ error: { code: "invalid_code_format" } }` and is **not** recorded. The frontend already validates locally, so this protects other clients (USSD, direct links). | Optional | Open |
+
+### 6.2 Response contract for the result states
+
+The design has these consumer states: first check, checked before, withdrawn, deactivated, expired, not recognised, unavailable. The current `GET /verify/{code}` can express only some of them. The frontend parser is `parse()` in `lib/api/verify.ts`; it accepts several shapes, so tell us the real one and it will be tightened.
+
+| ID | Requirement | Priority | Status |
+|---|---|---|---|
+| VER-15 | **First vs repeat check.** Add `is_first_check` (bool), `checked_at` (this check, ISO UTC) and, when it is a repeat, `first_checked_at`. "Repeat" means a prior recorded check of the same code, counted **before** this request's scan is written (and safe against two simultaneous first checks). No check count, who, where or device (VER-7). Without this the First check and Checked before screens cannot be told apart. | **Required** | Done 2026-11-05 (`Code.first_checked_at`, set atomically on the first genuine check; response has `is_first_check`, `checked_at`, and `first_checked_at` on repeats) |
+| VER-16 | **Withdrawn.** The API returns `recalled` only. The design shows "The manufacturer has withdrawn this batch" with the manufacturer's instructions. Return `result: "recalled"` or `"withdrawn"` (the frontend maps both to the red screen; see BATCHES_CODES_API_REQUIREMENTS.md section 2 for the recall vs withdraw decision) plus `effective_at`, `consumer_message` (the manufacturer's instructions; the frontend has a fixed fallback) and `approved_by` / `approved_at` when known. | **Required** | Open |
+| VER-17 | **Expired.** Add `result: "expired"` when the batch's `expiry` has passed, with `batch.batch_number` and `batch.expiry` (visibility toggles still apply). The product must still resolve normally otherwise. | **Required** | Open |
+| VER-18 | **Deactivated.** The response returns only `code`, `deactivated_at`, `deactivation_reason`. The design shows the manufacturer and a way to contact them, so also return `manufacturer.name` and `support_contact` (product override, else tenant default, VER-4). Consider **omitting `deactivation_reason`** from the public response unless it is written to be shown to consumers. | **Required** | Open |
+| VER-19 | **Field names to confirm.** The frontend reads: `manufacturer.name`; `product.{name, brand, variant_size, industry}`; `batch.{batch_number, manufacture_date, expiry}`; `product_image.url`; `support_contact.{email, phone, url}`. Regulatory data is returned as a **list** `regulatory_refs[{country_code, reference_number, valid_until, verification_status}]`, while VER-3 describes a single object with `authority`; please reconcile (the frontend can read the list, but needs the authority name, e.g. "NAFDAC", for the label). `product.industry` is needed to show the "speak to a pharmacist" note. | **Required** | Confirm |
+| VER-20 | **No caching, and abuse limits.** Every `GET /verify/{code}` records a scan, so responses must carry `Cache-Control: no-store`. Rate-limit the public endpoint per IP and return `429` with `Retry-After`; the frontend shows its "can't check right now" state for `429` and `5xx`. | Optional | Open |
+
+Frontend side of VER-8 to VER-14: once the alphabet is fixed, the constants and validator in `lib/api/verify.ts` change in one place.
+
 ---
 
 ## 7. Cross-cutting
@@ -229,6 +259,8 @@ Where the frontend hard-codes a guess. When an item above is confirmed, update t
 | `lib/auth/permissions.ts` | Editors assumed able to submit unless `can_submit_products === false` | AUTH-1 |
 | `components/catalogue/ProductForm.tsx` | `required_fields` keys; `null` clears; nested `regulatory_reference` upserts; only changed fields sent on edit; SKU/GTIN omitted after approval | PRD-9, PRD-10, PRD-22 |
 | `components/catalogue/ProductDetail.tsx` | `correction_request`, `gtin_conflict`, `pending_revision` shapes; activity `changes` or `before/after`; consumer preview read flat or under `product` | PRD-14, PRD-15, PRD-23, PRD-24 |
+| `lib/api/verify.ts` `CODE_LENGTH`, `cleanCode()`, `validateCode()` | Codes are 12 letters/digits, case-insensitive, dashes and spaces ignored, characters never substituted | VER-8 – VER-11 |
+| `lib/api/verify.ts` `parse()` | `/verify` payload fields and `result` values (`genuine`, `recalled`/`withdrawn`, `deactivated`, `expired`, `not_found`); repeat detected from `is_first_check` / `first_checked_at` | VER-15 – VER-19 |
 | `components/platform/ProductReviewQueue.tsx` | Row has `tenant_name`, `submitted_at`; `gtin_conflict_resolution` is free text | PLT-1, PLT-6 |
 
 ---
@@ -241,7 +273,8 @@ Where the frontend hard-codes a guess. When an item above is confirmed, update t
 4. **Consumer preview for never-approved products** (VER-6).
 5. **Behaviour with several regulatory references** on one product (PRD-10).
 6. **Suspension and batches**: does a suspended product block issuing more codes (BCH-10)?
-7. Batches & codes and Investigations decisions: see their own docs (§11 and §10).
+7. **Consumer code alphabet**, whether to add a check character, and what happens to existing 22-character codes (VER-9, VER-11, VER-13).
+8. Batches & codes and Investigations decisions: see their own docs (§11 and §10).
 
 ---
 

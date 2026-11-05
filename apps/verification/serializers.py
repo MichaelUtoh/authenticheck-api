@@ -31,6 +31,9 @@ class VerifyGenuineSerializer(serializers.Serializer):
 
     result = serializers.CharField()
     code = serializers.CharField()
+    is_first_check = serializers.BooleanField()
+    checked_at = serializers.DateTimeField()
+    first_checked_at = serializers.DateTimeField(required=False)
     product = ProductInfoSerializer()
     batch = BatchInfoSerializer()
     manufacturer = ManufacturerInfoSerializer()

@@ -13,12 +13,13 @@ Design:
 """
 
 import logging
-import secrets
 
 from celery import shared_task
 from django.db import IntegrityError, transaction
 
 from apps.core.tenancy import tenant_context
+
+from .codes import generate_code
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,7 @@ def _generate_chunk(job, product, size: int) -> list:
 
     codes = []
     while len(codes) < size:
-        batch_tokens = [secrets.token_urlsafe(16) for _ in range(size - len(codes))]
+        batch_tokens = [generate_code() for _ in range(size - len(codes))]
         objs = [
             Code(
                 tenant_id=job.tenant_id,
@@ -121,7 +122,7 @@ def _insert_one(obj):
                 obj.save()
             return
         except IntegrityError:
-            obj.code = secrets.token_urlsafe(16)
+            obj.code = generate_code()
     raise RuntimeError("Could not generate a unique code after max retries")
 
 
