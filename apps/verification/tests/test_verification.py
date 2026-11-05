@@ -142,8 +142,44 @@ def test_deactivated_code_returns_deactivated(client, active_code):
     assert response.status_code == 200
     assert response.data["result"] == "deactivated"
     assert response.data["code"] == active_code.code
-    assert response.data["deactivation_reason"] == "Suspected counterfeit"
+    assert "deactivation_reason" not in response.data
+    assert "Suspected counterfeit" not in str(response.data)
     assert response.data["deactivated_at"] is not None
+    assert response.data["manufacturer"]["name"] == "VerifyCo Ltd"
+    assert "support_contact" not in response.data  # none configured
+
+
+def test_deactivated_code_shows_support_contact(client, active_code, tenant):
+    from django.utils import timezone
+
+    tenant.support_email = "help@verifyco.test"
+    tenant.support_phone = "+2348000000000"
+    tenant.save(update_fields=["support_email", "support_phone"])
+    active_code.status = Code.Status.DEACTIVATED
+    active_code.deactivated_at = timezone.now()
+    active_code.save(update_fields=["status", "deactivated_at", "updated_at"])
+
+    body = client.get(URL.format(code=active_code.code)).json()
+
+    assert body["support_contact"] == {"email": "help@verifyco.test", "phone": "+2348000000000"}
+
+
+def test_deactivated_code_product_contact_overrides_and_can_be_hidden(client, active_code, tenant, batch):
+    from django.utils import timezone
+
+    from apps.catalogue.models import Product
+
+    tenant.support_email = "help@verifyco.test"
+    tenant.save(update_fields=["support_email"])
+    Product.unscoped.filter(pk=batch.product_id).update(support_contact={"email": "product@verifyco.test"})
+    active_code.status = Code.Status.DEACTIVATED
+    active_code.deactivated_at = timezone.now()
+    active_code.save(update_fields=["status", "deactivated_at", "updated_at"])
+
+    assert client.get(URL.format(code=active_code.code)).json()["support_contact"] == {"email": "product@verifyco.test"}
+
+    Product.unscoped.filter(pk=batch.product_id).update(consumer_visibility={"support_contact": False})
+    assert "support_contact" not in client.get(URL.format(code=active_code.code)).json()
 
 
 def test_deactivated_scan_records_event(client, active_code):
@@ -320,3 +356,34 @@ def test_recalled_beats_expired(client, active_code):
         expires_at="2020-01-01", status=Batch.Status.RECALLED
     )
     assert client.get(URL.format(code="VRFCODE0000001")).json()["result"] == "recalled"
+
+
+# ---------------------------------------------------------------------------
+# Caching and abuse limits (VER-20)
+# ---------------------------------------------------------------------------
+
+
+def test_verify_responses_are_never_cached(client, active_code):
+    for code in ("VRFCODE0000001", generate_code(), "NOPE"):  # 200, 404, 400
+        resp = client.get(URL.format(code=code))
+        assert "no-store" in resp["Cache-Control"], resp.status_code
+
+
+def test_verify_is_rate_limited_with_retry_after(client, monkeypatch):
+    from django.core.cache import cache
+
+    from apps.verification.throttles import VerifyIPThrottle
+
+    cache.clear()
+    monkeypatch.setitem(VerifyIPThrottle.THROTTLE_RATES, "verify_ip", "3/min")
+    try:
+        codes = [generate_code() for _ in range(4)]
+        statuses = [client.get(URL.format(code=c)).status_code for c in codes]
+        assert statuses == [404, 404, 404, 429]
+        limited = client.get(URL.format(code=generate_code()))
+        assert limited.status_code == 429
+        assert int(limited["Retry-After"]) > 0
+        assert "no-store" in limited["Cache-Control"]
+        assert limited.json()["error"]["code"] == "throttled"
+    finally:
+        cache.clear()

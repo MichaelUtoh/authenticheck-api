@@ -87,13 +87,13 @@ class ATUssdView(View):
                 content_type="text/plain",
             )
 
-        if code.status == Code.Status.DEACTIVATED:
+        batch = code.batch
+        if code.status == Code.Status.DEACTIVATED and batch.status != Batch.Status.RECALLED:
             return HttpResponse(
                 "END This code has been deactivated.",
                 content_type="text/plain",
             )
 
-        batch = code.batch
         if batch.status == Batch.Status.RECALLED:
             return HttpResponse(
                 f"END RECALL ALERT\nBatch: {batch.batch_number}\n"

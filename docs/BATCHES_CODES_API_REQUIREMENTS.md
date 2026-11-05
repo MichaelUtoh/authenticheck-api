@@ -105,8 +105,9 @@ Without it, the frontend derives the first three from the counts and expiry date
 
 The mock's button reads **"Recall or withdraw…"**. Existing `POST .../recall` "sets status + deactivates all codes".
 
-- **Decision:** are *recall* and *withdraw* two actions? Suggested: *withdraw* = stop sale, codes stay resolvable and consumers see a "withdrawn" message; *recall* = safety/quality recall, consumers see the red recall message. Both are consumer-visible states (design: "withdrawn (red, recall)").
-- **Required either way:** body `{ "action": "recall" | "withdraw", "reason": "...", "consumer_message": "..." }`, an audit entry, and the batch `status` updated. Consumer copy text is **Optional**; without it the frontend uses fixed wording.
+- **Decided 2026-11-05: recall and withdraw are the same action.** One `recalled` status, one red consumer screen. `POST .../recall` accepts `reason` (internal) and an optional `consumer_message` (shown to consumers), and stores `recalled_at`. The button can keep its "Recall or withdraw…" label; there is no `action` field. The text below is kept for history.
+- ~~**Decision:** are *recall* and *withdraw* two actions? Suggested: *withdraw* = stop sale, codes stay resolvable and consumers see a "withdrawn" message; *recall* = safety/quality recall, consumers see the red recall message. Both are consumer-visible states (design: "withdrawn (red, recall)").~~
+- **Required (as built, no `action` field):** body `{ "reason": "...", "consumer_message": "..." }`, an audit entry, and the batch `status` updated. Consumer copy text is **Optional**; without it the frontend uses fixed wording.
 - **Decision:** does recall still deactivate every code immediately, or does it go through the approval flow in [section 7](#7-deactivation-with-second-approval)?
 
 ---

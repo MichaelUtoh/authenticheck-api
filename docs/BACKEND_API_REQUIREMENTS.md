@@ -3,8 +3,88 @@
 One living list of everything the frontend needs from the backend that `ENDPOINT_REFERENCE.md` does not yet give it, grouped by area. It is meant to be **kept and edited**, not rewritten each time.
 
 - Last reviewed against `ENDPOINT_REFERENCE.md`: **2026-10-30**
+- **Frontend: see "what changed in the backend (2026-11-05)" below.**
 - Section 6 (public verification) updated **2026-11-05** after reading the backend source (`apps/issuance/tasks.py`, `apps/verification/views.py`): see 6.1 and 6.2.
 - Frontend state at that date: **Products tab built** against the endpoints below. Batches & codes and Investigations are still on sample data; their detailed specs stay in their own docs and are indexed in [section 5](#5-batches--codes) and [section 8](#8-investigations).
+
+---
+
+## Frontend: what changed in the backend (2026-11-05)
+
+Commits `220c47d` and `e556f1c`. **Action needed on the frontend: update `lib/api/verify.ts` and the code display/print components.** Details and IDs are in section 6.
+
+### 1. Codes are now 12 characters
+
+- Shape: 12 characters from **`23456789ABCDEFGHJKMNPQRSTVWXYZ`** (30 symbols; no `0 O 1 I L U`). The last character is a check character. Case-insensitive; spaces and dashes are ignored. Show and print as `XXXX-XXXX-XXXX`.
+- **Do not auto-correct** look-alikes (`0`→`O` etc.). A code containing a character outside the alphabet is invalid.
+- Validate locally with the same rule so typos never reach the API (Luhn mod-30 over the 11 payload characters, characters indexed by their position in the alphabet above):
+
+```ts
+const ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ";
+const N = ALPHABET.length; // 30
+
+function checkChar(payload: string): string {
+  let total = 0, factor = 2;
+  for (const ch of [...payload].reverse()) {
+    const addend = factor * ALPHABET.indexOf(ch);
+    factor = factor === 2 ? 1 : 2;
+    total += Math.floor(addend / N) + (addend % N);
+  }
+  return ALPHABET[(N - (total % N)) % N];
+}
+
+function isValidCode(raw: string): boolean {
+  const c = raw.replace(/[\s-]+/g, "").toUpperCase();
+  return c.length === 12 && [...c].every(ch => ALPHABET.includes(ch)) && checkChar(c.slice(0, 11)) === c[11];
+}
+```
+
+- Reference implementation: `is_valid_format()` in `apps/issuance/codes.py`. If the two ever disagree, the backend wins; tell us.
+- Old 22-character codes were converted. Codes already printed with the old value still resolve on `GET /verify/{old}` (exact, case-sensitive), but the response returns the **new** 12-character `code`. Do not reject old-looking input locally until the backend drops the legacy lookup; send it to the API and handle `400`.
+
+### 2. `GET /verify/{code}` response changes
+
+| Change | Detail |
+|---|---|
+| Lookup is forgiving | Trims, ignores case, spaces and dashes. Send the code as typed. |
+| `result` has a new value | `"expired"` (batch past its `expires_at`). Same payload shape as `genuine`/`recalled`; `recalled` wins over `expired`. |
+| Deactivated codes | `{ result: "deactivated", code, deactivated_at, manufacturer: { name }, support_contact?: { email?, phone?, url? } }`. `deactivation_reason` was **removed**. Show the manufacturer and contact so the consumer knows who to ask; `support_contact` can be absent. |
+| Recalled batches | `result: "recalled"` now appears for **every** code in a recalled batch (before, recalled batches showed `deactivated`, because recall deactivates all their codes). Optional extra fields: `effective_at` (ISO UTC) and `consumer_message` (the manufacturer's instructions; use your fixed wording when absent). `deactivation_reason` is never sent for recalled codes. |
+| First vs repeat check | Every genuine/recalled/expired response now has `is_first_check` (bool) and `checked_at` (ISO UTC). On a repeat it also has `first_checked_at`. The first check is recorded atomically. No who, where or device is ever returned. |
+| Malformed input | `400` with `{ "error": { "code": "invalid_code_format", "message": "...", "request_id": "..." } }`. It is **not** recorded as a scan. Show the "check the code and try again" state, not "not recognised". |
+| Unknown but well-formed code | Unchanged: `404` with `{ "result": "not_found" }` (recorded). This is the "not recognised" screen. |
+
+Example repeat check:
+
+```json
+{
+  "result": "genuine",
+  "code": "7KQ2M9XW4PRT",
+  "is_first_check": false,
+  "checked_at": "2026-11-05T19:40:12Z",
+  "first_checked_at": "2026-11-05T09:02:51Z",
+  "product": { "name": "...", "sku": "...", "brand": "..." },
+  "batch": { "batch_number": "...", "expires_at": "2027-12-31", "status": "active" },
+  "manufacturer": { "name": "..." }
+}
+```
+
+Wording: show a repeat as "checked before", never as "fake" (people legitimately re-scan).
+
+### 3. Other endpoints
+
+- `POST /catalogue/products/{id}/batches/{id}/recall` is also the withdraw action. It now accepts an optional `consumer_message` (shown to consumers) next to the internal `reason`. Send it from the recall dialog.
+- `POST /reports`, `POST /issuance/codes/{code}/deactivate` and the USSD lookup use the same forgiving lookup. `POST /reports` no longer upper-cases the code (it used to break matching on mixed-case codes) and still accepts any text.
+- `code` in issuance lists, CSV exports and `code.verified` webhooks is now the 12-character value. Anything that stored old code strings (integrations, print files) must be refreshed from the API.
+
+### 4. Still not available (do not build against these yet)
+
+| ID | Item | Waiting on |
+|---|---|---|
+| ~~VER-16~~ | Done: withdrawn is the same as recalled. Handle `result: "recalled"` only (keep mapping `withdrawn` to the same screen if you like, it is never sent). New optional fields on it: `effective_at`, `consumer_message` | Nothing |
+| ~~VER-18~~ | Done: `deactivated` now has `manufacturer.name` and optional `support_contact`; `deactivation_reason` is no longer sent (do not show a reason; use your fixed wording) | Nothing |
+| VER-19 | Final regulatory field shape and authority name | Backend |
+| ~~VER-20~~ | Done: `Cache-Control: no-store` on all `/verify` responses; `429` has `Retry-After` and error code `throttled` (show the "can't check right now" state) | Nothing |
 
 ---
 
@@ -206,7 +286,7 @@ The public checker (`/`, `/verify/{code}`) is built for **12-character codes**, 
 | VER-10 | **Normalise before every lookup:** trim, remove spaces and `-`, upper-case. Apply it in `GET /verify/{code}`, `POST /reports` (`code_str`), `POST /issuance/codes/{code}/deactivate`, and the GS1 redirect (VER-13), through one shared helper. Store codes canonically (upper-case, no dashes). The frontend shows and links codes as `XXXX-XXXX-XXXX`, and print exports should use the same grouping. Also applies to the Africa's Talking USSD lookup. | **Required** | Partly done 2026-11-05: `apps/issuance/codes.py` `find_code()` is used by verify, reports, deactivate and USSD (exact input first, then upper-case with spaces/dashes removed, so legacy 22-char codes still resolve). Canonical storage waits on VER-8/9/11. |
 | VER-11 | **Schema and existing data.** Migration for `Code.code` (`max_length` 12, or 16 for headroom) and for `code_str` on `ScanEvent` and the risk report model (these hold user input, so keep them long enough for malformed values). **Decision:** what happens to codes already issued at 22 characters: regenerate (fine if only test data), or keep them resolvable through a legacy exact-match fallback. | **Required** | **Converted** 2026-11-05: migrations 0004-0006 give every existing code a new 12-char code, keep the old value in `Code.legacy_code` (exact, case-sensitive match still resolves; reversible), and shrink `Code.code` to 16. Drop `legacy_code` later once no old printed codes remain. `ScanEvent.code_str` and report `code_str` stay 22 (user input). |
 | VER-12 | `risk/serializers.py` already upper-cases `code_str` on reports. That was wrong for mixed-case codes and becomes correct once VER-8 lands; make it use the VER-10 helper instead of a bare `.upper()`. | **Required** | Done 2026-11-05 (the `.upper()` is gone; reports now link to mixed-case codes) |
-| VER-13 | **GS1 Digital Link** `GET /01/{gtin}/21/{serial}` redirects to `/verify/{serial}`. Confirm that `serial` is the 12-character code (not a longer GS1 serial) and normalise it the same way. If GS1 serials will be longer, say so now. | Decision | Open |
+| VER-13 | **GS1 Digital Link** `GET /01/{gtin}/21/{serial}` redirects to `/verify/{serial}`. Confirm that `serial` is the 12-character code (not a longer GS1 serial) and normalise it the same way. If GS1 serials will be longer, say so now. | Decision | Decided 2026-11-05: the GS1 `serial` is always our 12-character code. The redirect hands it to `/api/v1/verify/{serial}`, which does the normalising. If GS1 serials ever differ from our code, this needs a mapping table. |
 | VER-14 | **Malformed input.** Today any string records a `not_found` scan, so typos and bots create noise in analytics and risk rules. Suggested: input that fails the VER-9 format returns `400` with `{ error: { code: "invalid_code_format" } }` and is **not** recorded. The frontend already validates locally, so this protects other clients (USSD, direct links). | Optional | Done 2026-11-05 for `GET /verify/{code}` (valid = 12-char code with good check character, or a known `legacy_code`). USSD and `POST /reports` still accept anything. |
 
 ### 6.2 Response contract for the result states
@@ -216,11 +296,11 @@ The design has these consumer states: first check, checked before, withdrawn, de
 | ID | Requirement | Priority | Status |
 |---|---|---|---|
 | VER-15 | **First vs repeat check.** Add `is_first_check` (bool), `checked_at` (this check, ISO UTC) and, when it is a repeat, `first_checked_at`. "Repeat" means a prior recorded check of the same code, counted **before** this request's scan is written (and safe against two simultaneous first checks). No check count, who, where or device (VER-7). Without this the First check and Checked before screens cannot be told apart. | **Required** | Done 2026-11-05 (`Code.first_checked_at`, set atomically on the first genuine check; response has `is_first_check`, `checked_at`, and `first_checked_at` on repeats) |
-| VER-16 | **Withdrawn.** The API returns `recalled` only. The design shows "The manufacturer has withdrawn this batch" with the manufacturer's instructions. Return `result: "recalled"` or `"withdrawn"` (the frontend maps both to the red screen; see BATCHES_CODES_API_REQUIREMENTS.md section 2 for the recall vs withdraw decision) plus `effective_at`, `consumer_message` (the manufacturer's instructions; the frontend has a fixed fallback) and `approved_by` / `approved_at` when known. | **Required** | Open |
+| VER-16 | **Withdrawn.** The API returns `recalled` only. The design shows "The manufacturer has withdrawn this batch" with the manufacturer's instructions. Return `result: "recalled"` or `"withdrawn"` (the frontend maps both to the red screen; see BATCHES_CODES_API_REQUIREMENTS.md section 2 for the recall vs withdraw decision) plus `effective_at`, `consumer_message` (the manufacturer's instructions; the frontend has a fixed fallback) and `approved_by` / `approved_at` when known. | **Required** | Done 2026-11-05. **Decision: withdrawn = recalled** (one action, one `recalled` status, one red screen; `withdrawn` is never returned). `effective_at` (when the batch was recalled; omitted for batches recalled before this change) and `consumer_message` (omitted when the manufacturer gave none) are returned on `recalled`. `approved_by`/`approved_at` dropped: there is no approval step for recall. Also fixed: recall deactivates every code, and verify/USSD used to show "deactivated" for them; a recalled batch now always shows `recalled`. |
 | VER-17 | **Expired.** Add `result: "expired"` when the batch's `expiry` has passed, with `batch.batch_number` and `batch.expiry` (visibility toggles still apply). The product must still resolve normally otherwise. | **Required** | Done 2026-11-05 (`expired` is recorded as its own scan result; `recalled` takes priority over `expired`) |
-| VER-18 | **Deactivated.** The response returns only `code`, `deactivated_at`, `deactivation_reason`. The design shows the manufacturer and a way to contact them, so also return `manufacturer.name` and `support_contact` (product override, else tenant default, VER-4). Consider **omitting `deactivation_reason`** from the public response unless it is written to be shown to consumers. | **Required** | Open |
+| VER-18 | **Deactivated.** The response returns only `code`, `deactivated_at`, `deactivation_reason`. The design shows the manufacturer and a way to contact them, so also return `manufacturer.name` and `support_contact` (product override, else tenant default, VER-4). Consider **omitting `deactivation_reason`** from the public response unless it is written to be shown to consumers. | **Required** | Done 2026-11-05. Public `deactivated` response is now `{ result, code, deactivated_at, manufacturer: { name }, support_contact? }`. `deactivation_reason` is **no longer sent** (internal only, for now). `manufacturer.name` is `Tenant.legal_name` (same as genuine). `support_contact` comes from the product override, else the tenant default (`support_email/phone/url`, set in company settings), and is omitted when none is set or the product hides its contact. For an unapproved or suspended product only the tenant default is used. |
 | VER-19 | **Field names to confirm.** The frontend reads: `manufacturer.name`; `product.{name, brand, variant_size, industry}`; `batch.{batch_number, manufacture_date, expiry}`; `product_image.url`; `support_contact.{email, phone, url}`. Regulatory data is returned as a **list** `regulatory_refs[{country_code, reference_number, valid_until, verification_status}]`, while VER-3 describes a single object with `authority`; please reconcile (the frontend can read the list, but needs the authority name, e.g. "NAFDAC", for the label). `product.industry` is needed to show the "speak to a pharmacist" note. | **Required** | Confirm |
-| VER-20 | **No caching, and abuse limits.** Every `GET /verify/{code}` records a scan, so responses must carry `Cache-Control: no-store`. Rate-limit the public endpoint per IP and return `429` with `Retry-After`; the frontend shows its "can't check right now" state for `429` and `5xx`. | Optional | Open |
+| VER-20 | **No caching, and abuse limits.** Every `GET /verify/{code}` records a scan, so responses must carry `Cache-Control: no-store`. Rate-limit the public endpoint per IP and return `429` with `Retry-After`; the frontend shows its "can't check right now" state for `429` and `5xx`. | Optional | Done 2026-11-05: every `/verify` response (200, 400, 404, 429) has `Cache-Control: no-cache, no-store, must-revalidate, max-age=0`; limit is 30/min per IP and `429` carries `Retry-After` (tested). |
 
 Frontend side of VER-8 to VER-14: once the alphabet is fixed, the constants and validator in `lib/api/verify.ts` change in one place.
 

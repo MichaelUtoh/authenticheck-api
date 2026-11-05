@@ -34,6 +34,8 @@ class VerifyGenuineSerializer(serializers.Serializer):
     is_first_check = serializers.BooleanField()
     checked_at = serializers.DateTimeField()
     first_checked_at = serializers.DateTimeField(required=False)
+    effective_at = serializers.DateTimeField(required=False)  # recalled only
+    consumer_message = serializers.CharField(required=False)  # recalled only; manufacturer's instructions
     product = ProductInfoSerializer()
     batch = BatchInfoSerializer()
     manufacturer = ManufacturerInfoSerializer()
@@ -46,7 +48,8 @@ class VerifyDeactivatedSerializer(serializers.Serializer):
     result = serializers.CharField()
     code = serializers.CharField()
     deactivated_at = serializers.DateTimeField()
-    deactivation_reason = serializers.CharField()
+    manufacturer = ManufacturerInfoSerializer()
+    support_contact = serializers.DictField(child=serializers.CharField(), required=False)
 
 
 class VerifyNotFoundSerializer(serializers.Serializer):

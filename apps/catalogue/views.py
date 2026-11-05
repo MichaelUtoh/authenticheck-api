@@ -952,7 +952,15 @@ class BulkImportJobDetailView(APIView):
 # ---------------------------------------------------------------------------
 
 @extend_schema(
-    request=inline_serializer("BatchRecallRequest", fields={"reason": s.CharField(required=False)}),
+    request=inline_serializer(
+        "BatchRecallRequest",
+        fields={
+            "reason": s.CharField(required=False, help_text="Internal; not shown to consumers"),
+            "consumer_message": s.CharField(
+                required=False, help_text="Instructions shown to consumers who check a code from this batch"
+            ),
+        },
+    ),
     responses={
         200: inline_serializer(
             "BatchRecallResponse",
@@ -960,8 +968,9 @@ class BulkImportJobDetailView(APIView):
         )
     },
     tags=["Catalogue — Batches"],
-    summary="Recall a batch and deactivate all its active codes",
+    summary="Recall (or withdraw) a batch and deactivate all its active codes",
     description=(
+        "Recall and withdraw are the same action and the same `recalled` status. "
         "Sets the batch status to `recalled` and bulk-deactivates every active code "
         "that belongs to it. Idempotent on code deactivation; raises 400 if the batch "
         "is already recalled."
@@ -979,8 +988,12 @@ class BatchRecallView(APIView):
         reason = (request.data.get("reason") or "")[:500]
         now = timezone.now()
 
+        consumer_message = (request.data.get("consumer_message") or "").strip()[:1000]
+
         batch.status = Batch.Status.RECALLED
-        batch.save(update_fields=["status", "updated_at"])
+        batch.recalled_at = now
+        batch.recall_message = consumer_message
+        batch.save(update_fields=["status", "recalled_at", "recall_message", "updated_at"])
 
         codes_deactivated = Code.unscoped.filter(
             tenant_id=request.active_tenant_id,
@@ -999,7 +1012,7 @@ class BatchRecallView(APIView):
             actor=request.user,
             tenant=request.active_membership.tenant,
             target=batch,
-            after={"reason": reason, "codes_deactivated": codes_deactivated},
+            after={"reason": reason, "consumer_message": consumer_message, "codes_deactivated": codes_deactivated},
         )
         return Response({"batch": BatchSerializer(batch).data, "codes_deactivated": codes_deactivated})
 

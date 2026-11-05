@@ -411,3 +411,31 @@ def test_submit_report_keeps_case_and_links_mixed_case_code(tenant, batch, activ
     report = ConsumerReport.objects.get(pk=resp.json()["id"])
     assert report.code_str == "aB3_x-Qz9"
     assert report.code is not None and report.code.code == "aB3_x-Qz9"
+
+
+def test_recall_endpoint_then_public_check_shows_recalled_with_message(client, batch, active_code):
+    """Recall deactivates every code, but consumers must still see the recall (not 'deactivated')."""
+    from apps.catalogue.models import Product
+
+    Product.unscoped.filter(pk=batch.product_id).update(status=Product.Status.APPROVED, approved_version=1)
+
+    url = f"/api/v1/catalogue/products/{batch.product_id}/batches/{batch.pk}/recall"
+    client.post(url, {"reason": "internal only", "consumer_message": "Stop using it and return it to the pharmacy."})
+
+    body = APIClient().get(f"/api/v1/verify/{active_code.code}").json()
+    assert body["result"] == "recalled"
+    assert body["consumer_message"] == "Stop using it and return it to the pharmacy."
+    assert body["effective_at"]
+    assert "internal only" not in str(body)
+    assert "deactivation_reason" not in body
+
+
+def test_recall_without_message_omits_consumer_message(client, batch, active_code):
+    from apps.catalogue.models import Product
+
+    Product.unscoped.filter(pk=batch.product_id).update(status=Product.Status.APPROVED, approved_version=1)
+    client.post(f"/api/v1/catalogue/products/{batch.product_id}/batches/{batch.pk}/recall", {})
+
+    body = APIClient().get(f"/api/v1/verify/{active_code.code}").json()
+    assert body["result"] == "recalled"
+    assert "consumer_message" not in body

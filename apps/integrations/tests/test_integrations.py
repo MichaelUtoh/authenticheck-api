@@ -115,3 +115,20 @@ def test_ussd_recalled_code(code):
     assert response.status_code == 200
     body = response.content.decode()
     assert "RECALL" in body.upper()
+
+
+def test_ussd_recalled_batch_with_deactivated_codes_shows_recall(code):
+    from django.utils import timezone
+
+    code.batch.status = Batch.Status.RECALLED
+    code.batch.save(update_fields=["status"])
+    code.status = code.Status.DEACTIVATED
+    code.deactivated_at = timezone.now()
+    code.save(update_fields=["status", "deactivated_at"])
+
+    response = APIClient().post(
+        "/api/v1/integrations/africastalking/ussd",
+        data={"sessionId": "s1", "serviceCode": "*123#", "phoneNumber": "+2348012345678", "text": code.code},
+        format="multipart",
+    )
+    assert "RECALL" in response.content.decode().upper()

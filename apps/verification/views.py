@@ -2,6 +2,7 @@ import logging
 
 from drf_spectacular.utils import extend_schema
 from django.utils import timezone
+from django.utils.cache import add_never_cache_headers
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -39,6 +40,13 @@ class VerifyView(APIView):
     permission_classes = [AllowAny]
     throttle_classes = [VerifyIPThrottle]
 
+    def finalize_response(self, request, response, *args, **kwargs):
+        # Every call records a scan, so no browser, proxy or CDN may answer it from cache.
+        # Applies to all outcomes, including 400, 404 and 429.
+        response = super().finalize_response(request, response, *args, **kwargs)
+        add_never_cache_headers(response)
+        return response
+
     def get(self, request, code_str):
         ip = _get_client_ip(request)
         ua = request.META.get("HTTP_USER_AGENT", "")[:500]
@@ -63,17 +71,24 @@ class VerifyView(APIView):
                 status=404,
             )
 
-        if code.status == Code.Status.DEACTIVATED:
+        # A recalled batch has all its codes deactivated by the recall; consumers must
+        # still see the recall message, so recall takes priority over deactivation.
+        recalled = code.batch.status == Batch.Status.RECALLED
+
+        if code.status == Code.Status.DEACTIVATED and not recalled:
             scan = _record(code_str, code, ScanEvent.Result.DEACTIVATED, ip, ua)
             _evaluate_risk(scan)
-            return Response(
-                VerifyDeactivatedSerializer({
-                    "result": "deactivated",
-                    "code": code.code,
-                    "deactivated_at": code.deactivated_at,
-                    "deactivation_reason": code.deactivation_reason,
-                }).data
-            )
+            # The internal deactivation_reason is deliberately not exposed to consumers.
+            payload = {
+                "result": "deactivated",
+                "code": code.code,
+                "deactivated_at": code.deactivated_at,
+                "manufacturer": {"name": code.tenant.legal_name},
+            }
+            contact = _deactivated_support_contact(code)
+            if contact:
+                payload["support_contact"] = contact
+            return Response(VerifyDeactivatedSerializer(payload).data)
 
         batch = code.batch
         product = batch.product
@@ -117,6 +132,11 @@ class VerifyView(APIView):
         }
         if not is_first:
             payload["first_checked_at"] = first_checked_at
+        if result == ScanEvent.Result.RECALLED:
+            if batch.recalled_at:
+                payload["effective_at"] = batch.recalled_at
+            if batch.recall_message:
+                payload["consumer_message"] = batch.recall_message
         if "support_contact" in consumer:
             payload["support_contact"] = consumer["support_contact"]
 
@@ -134,6 +154,29 @@ class VerifyView(APIView):
             )
 
         return Response(VerifyGenuineSerializer(payload).data)
+
+
+def _deactivated_support_contact(code) -> dict | None:
+    """Who the consumer can ask about a deactivated code.
+
+    Uses the product's override / the tenant default, like a genuine result, but only
+    shows product-level data while the product is publicly resolvable and has not hidden
+    its contact; otherwise falls back to the tenant default alone.
+    """
+    tenant = code.tenant
+    product = code.batch.product
+    tenant_default = {
+        k: v for k, v in (
+            ("email", tenant.support_email),
+            ("phone", tenant.support_phone),
+            ("url", tenant.support_url),
+        ) if v
+    }
+    if not product.is_publicly_resolvable:
+        return tenant_default or None
+    if not (product.consumer_visibility or {}).get("support_contact", True):
+        return None
+    return workflow.effective_support_contact(product)
 
 
 def _record(code_str: str, code, result: str, ip, ua: str) -> ScanEvent | None:

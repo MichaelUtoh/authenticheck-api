@@ -289,6 +289,9 @@ class Batch(TenantScopedModel):
         max_length=20, choices=Status.choices, default=Status.ACTIVE, db_index=True
     )
     notes = models.TextField(blank=True)
+    # Set by the recall/withdraw action (one action, one status). Shown to consumers.
+    recalled_at = models.DateTimeField(null=True, blank=True)
+    recall_message = models.TextField(blank=True)
 
     class Meta:
         constraints = [
