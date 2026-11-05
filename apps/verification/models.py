@@ -11,6 +11,7 @@ class ScanEvent(models.Model):
         NOT_FOUND = "not_found", "Not Found"
         DEACTIVATED = "deactivated", "Deactivated"
         RECALLED = "recalled", "Recalled"
+        EXPIRED = "expired", "Expired"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     occurred_at = models.DateTimeField(auto_now_add=True, db_index=True)

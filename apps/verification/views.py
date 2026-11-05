@@ -8,7 +8,8 @@ from rest_framework.views import APIView
 
 from apps.catalogue import workflow
 from apps.catalogue.models import Batch
-from apps.issuance.codes import clean_code, find_code
+from apps.core.exceptions import ApiError
+from apps.issuance.codes import clean_code, find_code, is_valid_format
 from apps.issuance.models import Code
 
 from .models import ScanEvent
@@ -28,7 +29,8 @@ logger = logging.getLogger(__name__)
     description=(
         "Public endpoint. No authentication required. "
         "Resolves a code to its product, batch, and manufacturer. "
-        "`result` is `genuine`, `recalled`, or `deactivated`. "
+        "`result` is `genuine`, `recalled`, `expired` or `deactivated`. "
+        "400 `invalid_code_format` means the input cannot be a code (not recorded). "
         "404 means the code does not exist in the system (likely counterfeit)."
     ),
 )
@@ -52,6 +54,9 @@ class VerifyView(APIView):
             ),
         )
         if code is None:
+            if not is_valid_format(code_str):
+                # Not a possible code: don't record it (keeps analytics and risk rules clean).
+                raise ApiError(400, "invalid_code_format", "That is not a valid code format.")
             _record(code_str, None, ScanEvent.Result.NOT_FOUND, ip, ua)
             return Response(
                 {"result": "not_found", "detail": "Code not found."},
@@ -81,11 +86,12 @@ class VerifyView(APIView):
                 status=404,
             )
 
-        result = (
-            ScanEvent.Result.RECALLED
-            if batch.status == Batch.Status.RECALLED
-            else ScanEvent.Result.GENUINE
-        )
+        if batch.status == Batch.Status.RECALLED:
+            result = ScanEvent.Result.RECALLED
+        elif batch.effective_status == Batch.Status.EXPIRED:
+            result = ScanEvent.Result.EXPIRED
+        else:
+            result = ScanEvent.Result.GENUINE
         now = timezone.now()
         # Atomic: exactly one concurrent first check wins.
         is_first = Code.unscoped.filter(pk=code.pk, first_checked_at__isnull=True).update(first_checked_at=now) == 1

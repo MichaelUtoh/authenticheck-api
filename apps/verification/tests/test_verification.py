@@ -6,6 +6,7 @@ from rest_framework.test import APIClient
 
 from apps.catalogue.models import Batch, Brand, Product
 from apps.core.tenancy import tenant_context
+from apps.issuance.codes import generate_code
 from apps.issuance.models import Code, IssuanceJob
 from apps.tenants.models import Membership, Tenant
 from apps.verification.models import ScanEvent
@@ -164,16 +165,17 @@ def test_deactivated_scan_records_event(client, active_code):
 
 
 def test_unknown_code_returns_404(client):
-    response = client.get(URL.format(code="DOESNOTEXIST001"))
+    response = client.get(URL.format(code=generate_code()))
 
     assert response.status_code == 404
     assert response.data["result"] == "not_found"
 
 
 def test_not_found_scan_records_event(client):
-    client.get(URL.format(code="DOESNOTEXIST002"))
+    unknown = generate_code()
+    client.get(URL.format(code=unknown))
 
-    event = ScanEvent.objects.get(code_str="DOESNOTEXIST002")
+    event = ScanEvent.objects.get(code_str=unknown)
     assert event.result == ScanEvent.Result.NOT_FOUND
     assert event.code is None
 
@@ -255,8 +257,8 @@ def test_verify_legacy_mixed_case_code_still_exact(client, tenant, batch, active
     resp = client.get(URL.format(code="aB3_x-Qz9"))
     assert resp.status_code == 200
     assert resp.json()["code"] == "7KQ2M9XW4PRT"
-    # Different case of a case-sensitive legacy code is a different (unknown) code.
-    assert client.get(URL.format(code="AB3_X-QZ9")).status_code == 404
+    # Different case of a case-sensitive legacy code is not that code (and not a valid new one).
+    assert client.get(URL.format(code="AB3_X-QZ9")).status_code == 400
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +279,44 @@ def test_first_then_repeat_check(client, active_code):
 
 
 def test_unknown_code_does_not_mark_anything(client, active_code):
-    assert client.get(URL.format(code="NOPE")).status_code == 404
+    assert client.get(URL.format(code=generate_code())).status_code == 404
     active_code.refresh_from_db()
     assert active_code.first_checked_at is None
+
+
+# ---------------------------------------------------------------------------
+# Malformed input (VER-14) and expired batches (VER-17)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("typed", ["NOPE", "0O1ILU0O1ILU", "ABCDEFGHJKMN", "x" * 40])
+def test_malformed_code_is_400_and_not_recorded(client, typed):
+    response = client.get(URL.format(code=typed))
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_code_format"
+    assert ScanEvent.objects.count() == 0
+
+
+def test_bad_check_character_is_malformed(client):
+    good = generate_code()
+    bad = good[:-1] + ("2" if good[-1] != "2" else "3")
+    assert client.get(URL.format(code=bad)).status_code == 400
+    assert ScanEvent.objects.count() == 0
+
+
+def test_expired_batch_returns_expired(client, active_code):
+    Batch.unscoped.filter(pk=active_code.batch_id).update(expires_at="2020-01-01")
+    response = client.get(URL.format(code="VRFCODE0000001"))
+    assert response.status_code == 200
+    body = response.json()
+    assert body["result"] == "expired"
+    assert body["batch"]["batch_number"] == "VRF-BATCH-001"
+    assert body["batch"]["expires_at"] == "2020-01-01"
+    assert ScanEvent.objects.get().result == ScanEvent.Result.EXPIRED
+
+
+def test_recalled_beats_expired(client, active_code):
+    Batch.unscoped.filter(pk=active_code.batch_id).update(
+        expires_at="2020-01-01", status=Batch.Status.RECALLED
+    )
+    assert client.get(URL.format(code="VRFCODE0000001")).json()["result"] == "recalled"
