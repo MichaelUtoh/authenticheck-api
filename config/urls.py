@@ -23,6 +23,7 @@ api_v1_patterns = [
 ]
 
 urlpatterns = [
+    path("", LiveView.as_view(), name="root"),
     path(settings.ADMIN_URL, admin.site.urls),
     path("api/v1/", include(api_v1_patterns)),
 ]
