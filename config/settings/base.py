@@ -42,9 +42,9 @@ AUTH_USER_MODEL = "accounts.User"
 OTP_TOTP_ISSUER = env("OTP_TOTP_ISSUER", default="AuthentiCheck")
 
 MIDDLEWARE = [
+    "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
-    "corsheaders.middleware.CorsMiddleware",
     "apps.core.middleware.RequestIDMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
