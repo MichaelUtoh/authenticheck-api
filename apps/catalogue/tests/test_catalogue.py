@@ -198,6 +198,74 @@ def test_create_batch(client, product):
     assert response.data["quantity"] == 500
 
 
+def test_create_batch_with_frontend_field_names(client, product):
+    response = client.post(
+        f"/api/v1/catalogue/products/{product.pk}/batches",
+        {
+            "product_id": str(product.pk),
+            "batch_number": "B200",
+            "manufacture_date": "2026-01-15",
+            "expiry": "2028-01-14",
+            "declared_quantity": 1200,
+            "pack_format": "5 x 12 bottle",
+        },
+    )
+    assert response.status_code == 201, response.data
+    # both naming styles are returned
+    assert response.data["manufacture_date"] == response.data["manufactured_at"] == "2026-01-15"
+    assert response.data["expiry"] == response.data["expires_at"] == "2028-01-14"
+    assert response.data["declared_quantity"] == 1200
+    assert response.data["pack_format"] == "5 x 12 bottle"
+    assert response.data["id"]
+
+
+def test_create_batch_still_accepts_original_field_names(client, product):
+    response = client.post(
+        f"/api/v1/catalogue/products/{product.pk}/batches",
+        {"product_id": str(product.pk), "batch_number": "B201", "manufactured_at": "2026-02-01",
+         "expires_at": "2027-02-01", "quantity": 10},
+    )
+    assert response.status_code == 201
+    assert response.data["expiry"] == "2027-02-01"
+
+
+def test_create_batch_date_errors_use_the_sent_field_name(client, product):
+    response = client.post(
+        f"/api/v1/catalogue/products/{product.pk}/batches",
+        {"product_id": str(product.pk), "batch_number": "B202", "expiry": "not-a-date"},
+    )
+    assert response.status_code == 400
+    assert "expiry" in response.data["error"]["details"]
+
+
+def test_duplicate_batch_number_is_a_field_error(client, batch, product):
+    response = client.post(
+        f"/api/v1/catalogue/products/{product.pk}/batches",
+        {"product_id": str(product.pk), "batch_number": batch.batch_number, "quantity": 5},
+    )
+    assert response.status_code == 400
+    assert response.data["error"]["code"] == "validation_error"
+    assert "batch_number" in response.data["error"]["details"]
+
+
+def test_patch_batch_with_frontend_names(client, batch, product):
+    response = client.patch(
+        f"/api/v1/catalogue/products/{product.pk}/batches/{batch.pk}",
+        {"expiry": "2029-05-05", "pack_format": "24 x 1"},
+    )
+    assert response.status_code == 200
+    assert response.data["expires_at"] == "2029-05-05"
+    assert response.data["pack_format"] == "24 x 1"
+
+
+def test_global_batch_list_returns_frontend_names(client, batch):
+    response = client.get("/api/v1/catalogue/batches")
+    assert response.status_code == 200
+    row = response.data["results"][0]
+    for key in ("manufacture_date", "expiry", "declared_quantity", "pack_format", "issuance"):
+        assert key in row
+
+
 def test_list_batches(client, batch, product):
     response = client.get(f"/api/v1/catalogue/products/{product.pk}/batches")
     assert response.status_code == 200

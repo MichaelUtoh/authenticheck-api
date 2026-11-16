@@ -6,8 +6,11 @@ from .models import LEGACY_ROLE_ALIASES, Membership, Tenant
 class TenantSerializer(serializers.ModelSerializer):
     class Meta:
         model = Tenant
-        fields = ["id", "legal_name", "trading_name", "status", "created_at"]
-        read_only_fields = ["id", "status", "created_at"]
+        fields = [
+            "id", "legal_name", "trading_name", "status", "decision_reason", "decided_at",
+            "created_at",
+        ]
+        read_only_fields = ["id", "status", "decision_reason", "decided_at", "created_at"]
 
 
 class TenantRegisterSerializer(serializers.Serializer):

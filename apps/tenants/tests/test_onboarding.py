@@ -68,10 +68,39 @@ def test_staff_can_approve_pending_tenant(staff_client, registered_tenant):
 
 
 def test_staff_can_reject_pending_tenant(staff_client, registered_tenant):
-    response = staff_client.post(f"/api/v1/tenants/{registered_tenant.pk}/reject", {})
+    response = staff_client.post(
+        f"/api/v1/tenants/{registered_tenant.pk}/reject", {"reason": "CAC number does not match"}
+    )
     assert response.status_code == 200
     registered_tenant.refresh_from_db()
     assert registered_tenant.status == Tenant.Status.REJECTED
+    assert registered_tenant.decision_reason == "CAC number does not match"
+
+
+@pytest.mark.parametrize("action", ["reject", "request-info"])
+def test_reject_and_request_info_require_a_reason(staff_client, registered_tenant, action):
+    for body in ({}, {"reason": "   "}):
+        response = staff_client.post(f"/api/v1/tenants/{registered_tenant.pk}/{action}", body)
+        assert response.status_code == 400
+        assert "reason" in response.data["error"]["details"]
+    registered_tenant.refresh_from_db()
+    assert registered_tenant.status == Tenant.Status.PENDING
+
+
+def test_request_info_reason_reaches_the_applicant_and_clears_on_approval(
+    staff_client, registered_tenant
+):
+    staff_client.post(
+        f"/api/v1/tenants/{registered_tenant.pk}/request-info", {"reason": "Upload your CAC certificate"}
+    )
+    registered_tenant.refresh_from_db()
+    assert registered_tenant.status == Tenant.Status.INFO_REQUESTED
+    assert registered_tenant.decision_reason == "Upload your CAC certificate"
+    assert registered_tenant.decided_at is not None
+
+    response = staff_client.post(f"/api/v1/tenants/{registered_tenant.pk}/approve", {})
+    assert response.status_code == 200
+    assert response.data["decision_reason"] == ""
 
 
 def test_invalid_transition_is_rejected(staff_client, registered_tenant):

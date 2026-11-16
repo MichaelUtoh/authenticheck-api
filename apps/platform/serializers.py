@@ -10,7 +10,10 @@ class PlatformTenantSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Tenant
-        fields = ["id", "legal_name", "trading_name", "status", "member_count", "created_at"]
+        fields = [
+            "id", "legal_name", "trading_name", "status", "decision_reason", "decided_at",
+            "member_count", "created_at",
+        ]
         read_only_fields = fields
 
 
@@ -22,7 +25,7 @@ class PlatformTenantDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = Tenant
         fields = [
-            "id", "legal_name", "trading_name", "status",
+            "id", "legal_name", "trading_name", "status", "decision_reason", "decided_at",
             "member_count", "active_codes", "open_flags", "created_at",
         ]
         read_only_fields = fields

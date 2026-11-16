@@ -3,7 +3,7 @@ import logging
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema, extend_schema_view
 from rest_framework import status
-from rest_framework.exceptions import NotFound, PermissionDenied
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.permissions import IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -22,6 +22,9 @@ from .serializers import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Actions whose reason is mandatory because the applicant is shown it.
+_REASON_REQUIRED = {"reject", "request_info"}
 
 _ALLOWED_TRANSITIONS = {
     Tenant.Status.PENDING: {
@@ -115,10 +118,16 @@ class _TenantStatusTransitionView(APIView):
 
         serializer = TenantStatusUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        reason = serializer.validated_data.get("reason", "").strip()
+        if self._action in _REASON_REQUIRED and not reason:
+            raise ValidationError({"reason": ["A reason is required; the applicant is shown it."]})
 
         before = {"status": tenant.status}
         tenant.status = allowed[self._action]
-        tenant.save(update_fields=["status", "updated_at"])
+        # Reasons for reject / request-info reach the applicant; approve and suspend clear them.
+        tenant.decision_reason = reason if self._action in _REASON_REQUIRED else ""
+        tenant.decided_at = timezone.now() if self._action in _REASON_REQUIRED else None
+        tenant.save(update_fields=["status", "decision_reason", "decided_at", "updated_at"])
 
         audit.record(
             action=f"tenant.{self._action}",
@@ -127,7 +136,7 @@ class _TenantStatusTransitionView(APIView):
             target=tenant,
             before=before,
             after={"status": tenant.status},
-            reason=serializer.validated_data.get("reason", ""),
+            reason=reason,
         )
         return Response(TenantSerializer(tenant).data)
 

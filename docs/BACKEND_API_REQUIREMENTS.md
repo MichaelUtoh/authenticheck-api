@@ -11,6 +11,8 @@ One living list of everything the frontend needs from the backend that `ENDPOINT
 
 ## Frontend: staff sign-in with MFA is now available (2026-11-16)
 
+**Frontend status (2026-11-16): built, untested against a live staff account.** Login branches on `mfa_required` / `mfa_enrollment_required`; `components/auth/MFASetup.tsx` (QR + manual key + confirm) and `MFAChallenge.tsx` (returning staff) handle the error codes below. Still to do: the staff review-queue shell checks (steps 4 and 5) and a lost-authenticator reset.
+
 **Action needed on the frontend: build the staff sign-in screens (QR code and 6-digit code).** Until now a platform staff user could not finish logging in through the API, so the product review queue could not be used. The backend is done and tested; only the screens are missing. Reference: `ENDPOINT_REFERENCE.md`, Auth section.
 
 ### Flow
@@ -73,6 +75,41 @@ Also: the login endpoint itself is rate limited (5 attempts per 15 minutes per e
 3. Verify screen for returning staff, plus the error states above.
 4. Staff area shell with the product review queue and the approve / request changes / reject actions.
 5. Optional later: a "reset my authenticator" flow. There is no endpoint for it yet; today a lost device needs a backend change. Tell us when you want it.
+
+---
+
+### Fields the backend still needs (to complete the frontend)
+
+Verified against the code on 2026-11-16. Each item says what the frontend reads and what the API gives today.
+
+**Tenant applications (`GET /platform/tenants`, `GET /platform/tenants/{id}`)**
+
+| Field the frontend reads | API today | Needed to supply it |
+|---|---|---|
+| `id`, `status`, `legal_name`, `trading_name`, `created_at` | Returned | – |
+| `decision_reason`, `decided_at` | Returned (new) | – |
+| `industry` | **Not stored** | New tenant field, collected at registration (cosmetics / pharma; note `is_pharma` already exists) |
+| `rc_number` (CAC number) | **Not stored** | New tenant field, collected at registration |
+| `owner_email`, `owner_name` | **Not returned** | Derivable from the owner membership (`role=owner`); add to the platform serializers |
+| `city` | **Not stored** | New tenant field, collected at registration |
+| `brands: [{ name }]` | **Not returned** | Derivable from the tenant's brands; add to the platform serializers |
+| `submitted_at` | **Not stored** | `created_at` can stand in; or add a field if resubmission after "info requested" should reset it |
+
+**Needs a decision from the Product Owner:** which of `industry`, `rc_number` and `city` the registration form must collect, and whether they are required. Until then the frontend shows "-" for these columns. `POST /tenants/register` accepts only `legal_name` and `trading_name` today.
+
+**Tenant review extras (PLT-11)**, not built on the backend: evidence checklist (CAC certificate, brand ownership, NAFDAC registrations, signatory, support contact), operations at a glance (verification p95, error rate, failed jobs, queue backlog, TLS expiry, last restore test), recent privileged activity (`GET /platform/audit` exists, so this one only needs the frontend page). Optional; say which ones the review panel must have.
+
+**Batches (`GET /catalogue/batches`, BCH-12)**
+
+| Field | API today |
+|---|---|
+| `id`, `batch_number`, `product_id`, `product_name`, `status`, `declared_quantity`, `issuance { requested, generated, failed, deactivated }` | Returned |
+| `manufacture_date`, `expiry`, `pack_format` | Returned (new). `expires_at` and `manufactured_at` are kept as aliases |
+| `attention[]` and a `needs_attention` filter | **Not built.** The frontend derives *Partial* (failed > 0) and *Expires soon* (60 days) itself. *Unreconciled* and *Approval pending* need the server |
+
+**Create batch (`POST /catalogue/products/{id}/batches`, BCH-11)**
+
+Send `{ product_id, batch_number, manufacture_date?, expiry?, declared_quantity, pack_format? }`, dates as `YYYY-MM-DD`. Field errors come back under `error.details.<field>`, keyed by the name you sent (`expiry`, `manufacture_date`, `batch_number`, `declared_quantity`).
 
 ---
 
@@ -227,6 +264,9 @@ The review queue at `/platform/products` exists on the frontend. It needs more t
 | PLT-6 | `gtin_conflict_resolution` format: free text, or `{ action: "allow_duplicate"\|"..." , note }`? Also: a conflict preview (`conflicting_product` summary) so the reviewer can see what clashes. | Confirm | Confirm | Frontend sends a free-text string. |
 | PLT-7 | Notify the submitter on a decision (email and/or webhook event `product.approved`, `product.changes_requested`, `product.rejected`). | Optional | Open | Users find out when they open the product. |
 | PLT-8 | Queue filters: `tenant_id`, `industry`, `has_pending_revision`, `ordering` (oldest first is the default). | Optional | Open | – |
+| PLT-9 | Shape of `GET /platform/tenants` rows and filters. The Tenant applications page (`/platform/tenants`) reads `{ count, results: [{ id, status, legal_name, trading_name, industry, rc_number, owner_email, owner_name, city, brands: [{name}], created_at, submitted_at }] }` (a plain array also works) and sends `status` **repeated** (`?status=pending&status=info_requested`) for the "waiting" view. Please confirm the names, or accept a repeatable `status`. | **Required** | **Partly done 2026-11-16.** Repeatable `status` is done (unknown value returns `400`), and rows now carry `decision_reason` and `decided_at`. **Still missing, needs a product decision:** `industry`, `rc_number`, `owner_email`, `owner_name`, `city`, `brands`, `submitted_at`. The Tenant model and registration form do not collect them yet (see "Fields the backend still needs" below). | Missing fields show "—"; if only one `status` is accepted the "waiting" view shows only part of the queue. |
+| PLT-10 | Body of `POST /tenants/{id}/approve`, `/reject`, `/request-info`, `/suspend`. The frontend sends `{ "reason": "..." }` (required in the UI, audited). Please confirm the key (`reason` vs `review_note`) and that `reject` / `request-info` reasons reach the applicant. | **Required** | **Done 2026-11-16.** The key is `reason`. `reject` and `request-info` now **require** it (`400` with `details.reason` if blank); it is saved as `decision_reason` plus `decided_at` and returned on `GET /tenants/me` and the platform tenant rows, so the applicant sees it. `approve` and `suspend` keep it optional (audit only) and clear `decision_reason`. | A wrong key returns `400`; the decision is not recorded. |
+| PLT-11 | The design's tenant-review extras have no endpoint yet, so they are not shown: the **evidence checklist** (CAC certificate, brand ownership, NAFDAC registrations, signatory, support contact: `Checked` / `Manufacturer-provided`), **operations at a glance** (verification p95, error rate, failed jobs, queue backlog, TLS expiry, last restore test), **recent privileged activity** (`GET /platform/audit` exists but the page isn't built), and a pending-application count for the sidebar badge (the frontend uses `count` from the list). | Optional | Open | The review panel shows only company details and the decision form. |
 
 ---
 
@@ -246,7 +286,9 @@ The Batches & codes tab is still on sample data (`lib/mock/batches.ts`). The ful
 | BCH-8 | Codes list: cursor pagination, search, export/range filters | **Required** | Open | §10.1 |
 | BCH-9 | Server-computed attention markers, per-batch scans, history | Optional | Open | §2.3, §10.2, §10.3 |
 | BCH-10 | **Gating rule, written down.** A batch can be created and codes issued only when the product is `approved`, **not** suspended, and active. Error codes: `409 product_not_approved`, `409 product_suspended`, `409 product_archived`. Say what happens to existing batches when a product is suspended (codes stay issued but `/verify` returns 404) or when a revision is in review (nothing changes). | **Required** | Open | Products doc §3 |
-| BCH-11 | `GET /catalogue/products/{id}/batches` is paginated and returns `codes_issued` per batch. | Optional | Open | – |
+| BCH-11 | Confirm the **create-batch body** the new form (`/issuance/batches/new`) sends to `POST /catalogue/products/{product_id}/batches`: `{ product_id, batch_number, manufacture_date, expiry, declared_quantity, pack_format? }` (dates `YYYY-MM-DD`). `ENDPOINT_REFERENCE.md` says `expires_at` in one place and the types say `expiry`; the form sends `expiry` and maps `expires_at` / `best_before` / `quantity` errors back to the right inputs. Also confirm: `pack_format` is accepted (or ignored) today, `batch_number` uniqueness error is a `validation_error` keyed `batch_number`, and the response includes `id`. | **Required** | **Done 2026-11-16.** The create and patch bodies accept `manufacture_date`, `expiry`, `declared_quantity` and `pack_format`, as well as the original `manufactured_at`, `expires_at` and `quantity`. Errors are keyed by the name the client sent. A duplicate `batch_number` for the product now returns `400 validation_error` with `details.batch_number` (before, it was a database error). The response includes `id`. `pack_format` is stored (free text, max 100). | A wrong key returns `400`/`422` and the form shows the server's field errors; `pack_format` is only sent when filled. |
+| BCH-12 | The Batches & codes list now reads `GET /catalogue/batches` (`q`, `status`, `page`, `page_size`). Row fields read: `id`, `batch_number`, `product_id`, `product_name`, `manufacture_date`, `expiry` (or `expires_at` / `best_before`), `declared_quantity` (or `quantity`), `pack_format`, `status`, `issuance { requested, generated, failed, deactivated }`, and optionally `attention[]` (`partial_job`, `unreconciled`, `expiring_soon`, `approval_pending`). Without `attention` the UI derives only *Partial* (failed > 0) and *Expires soon* (≤ 60 days); *Unreconciled* and *Approval pending* need the server. The "Needs attention" filter was removed until `needs_attention` exists. | **Required** | **Mostly done 2026-11-16.** `GET /catalogue/batches` rows now also return `manufacture_date`, `expiry` and `pack_format`, with `declared_quantity`, `issuance`, `product_id` and `product_name` as before. Still missing: `attention[]` (`unreconciled`, `approval_pending`, server-side `partial_job` and `expiring_soon`) and the `needs_attention` filter. | Missing fields show "—"; attention chips are incomplete. |
+| BCH-13 | `GET /catalogue/products/{id}/batches` is paginated and returns `codes_issued` per batch. | Optional | Open | – |
 
 ---
 

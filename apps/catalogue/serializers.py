@@ -340,14 +340,17 @@ class BatchSerializer(serializers.ModelSerializer):
     # An active batch past its best-before date reads as "expired" (computed, not stored).
     status = serializers.CharField(source="effective_status", read_only=True)
     declared_quantity = serializers.IntegerField(source="quantity", read_only=True)
+    # Same values as manufactured_at / expires_at, under the names the frontend uses.
+    manufacture_date = serializers.DateField(source="manufactured_at", read_only=True)
+    expiry = serializers.DateField(source="expires_at", read_only=True)
     issuance = serializers.SerializerMethodField()
 
     class Meta:
         model = Batch
         fields = [
             "id", "product_id", "product_name", "batch_number", "manufactured_at",
-            "expires_at", "quantity", "declared_quantity", "status", "issuance", "notes",
-            "created_at", "updated_at",
+            "manufacture_date", "expires_at", "expiry", "quantity", "declared_quantity",
+            "pack_format", "status", "issuance", "notes", "created_at", "updated_at",
         ]
         read_only_fields = fields
 
@@ -361,12 +364,19 @@ class BatchWriteSerializer(serializers.ModelSerializer):
     product_id = serializers.UUIDField(write_only=True)
     # Alias of `quantity`, named as in the batches API requirements.
     declared_quantity = serializers.IntegerField(source="quantity", min_value=1, required=False)
+    # Aliases of manufactured_at / expires_at, named as in the frontend. Errors are keyed by the
+    # name the client sent.
+    manufacture_date = serializers.DateField(
+        source="manufactured_at", required=False, allow_null=True
+    )
+    expiry = serializers.DateField(source="expires_at", required=False, allow_null=True)
 
     class Meta:
         model = Batch
         fields = [
-            "product_id", "batch_number", "manufactured_at", "expires_at",
-            "quantity", "declared_quantity", "status", "notes",
+            "product_id", "batch_number", "manufactured_at", "manufacture_date",
+            "expires_at", "expiry", "quantity", "declared_quantity", "pack_format",
+            "status", "notes",
         ]
 
 

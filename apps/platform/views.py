@@ -36,7 +36,8 @@ _STAFF_PERMS = [IsAuthenticated, IsAdminUser, IsMFAVerified]
             OpenApiParameter(
                 "status",
                 OpenApiTypes.STR,
-                description="Filter by tenant status",
+                many=True,
+                description="Filter by tenant status. Repeatable: ?status=pending&status=info_requested",
             )
         ],
         responses={200: PlatformTenantSerializer(many=True)},
@@ -58,9 +59,13 @@ class PlatformTenantListView(APIView):
             )
             .order_by("-created_at")
         )
-        status_filter = request.query_params.get("status")
-        if status_filter:
-            qs = qs.filter(status=status_filter)
+        statuses = request.query_params.getlist("status")
+        if statuses:
+            valid = {value for value, _ in Tenant.Status.choices}
+            unknown = set(statuses) - valid
+            if unknown:
+                raise ValidationError({"status": [f"Unknown status: {', '.join(sorted(unknown))}."]})
+            qs = qs.filter(status__in=statuses)
 
         paginator = StandardPagination()
         page = paginator.paginate_queryset(qs, request)

@@ -719,6 +719,9 @@ class BatchListCreateView(APIView):
         serializer = BatchWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         serializer.validated_data.pop("product_id", None)
+        _require_unique_batch_number(
+            request.active_tenant_id, product, serializer.validated_data.get("batch_number")
+        )
 
         batch = Batch(
             tenant=request.active_membership.tenant,
@@ -764,6 +767,10 @@ class BatchDetailView(APIView):
         serializer = BatchWriteSerializer(batch, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.validated_data.pop("product_id", None)
+        _require_unique_batch_number(
+            request.active_tenant_id, batch.product, serializer.validated_data.get("batch_number"),
+            exclude_pk=batch.pk,
+        )
         before = {"batch_number": batch.batch_number, "status": batch.status, "quantity": batch.quantity}
         for attr, val in serializer.validated_data.items():
             setattr(batch, attr, val)
@@ -783,6 +790,20 @@ class BatchDetailView(APIView):
 # ---------------------------------------------------------------------------
 # Batches across all products
 # ---------------------------------------------------------------------------
+
+def _require_unique_batch_number(tenant_id, product, batch_number, exclude_pk=None):
+    """A product cannot have two batches with the same number; report it as a field error
+    (not a 500 from the database constraint)."""
+    if not batch_number:
+        return
+    clash = Batch.objects.filter(
+        tenant_id=tenant_id, product=product, batch_number=batch_number
+    ).exclude(pk=exclude_pk)
+    if clash.exists():
+        raise ValidationError(
+            {"batch_number": ["This product already has a batch with that number."]}
+        )
+
 
 _BATCH_ORDERINGS = {
     "-created_at": "-created_at",

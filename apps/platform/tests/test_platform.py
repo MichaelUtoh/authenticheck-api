@@ -101,6 +101,20 @@ def test_platform_tenant_list_filter_by_status(staff_client, tenant):
 # ---------------------------------------------------------------------------
 
 
+def test_platform_tenant_list_accepts_repeated_status(staff_client):
+    Tenant.objects.create(legal_name="A", status=Tenant.Status.PENDING)
+    Tenant.objects.create(legal_name="B", status=Tenant.Status.INFO_REQUESTED)
+    Tenant.objects.create(legal_name="C", status=Tenant.Status.APPROVED)
+    response = staff_client.get("/api/v1/platform/tenants?status=pending&status=info_requested")
+    assert response.status_code == 200
+    assert {r["legal_name"] for r in response.data["results"]} == {"A", "B"}
+
+
+def test_platform_tenant_list_rejects_unknown_status(staff_client):
+    response = staff_client.get("/api/v1/platform/tenants?status=nope")
+    assert response.status_code == 400
+
+
 def test_platform_tenant_detail_returns_stats(staff_client, tenant, owner):
     with tenant_context(tenant.pk):
         brand = Brand.objects.create(tenant=tenant, name="B", slug="b")

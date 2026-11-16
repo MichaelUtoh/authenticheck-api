@@ -97,8 +97,8 @@ Staff login flow: `POST /auth/login` returns `{ mfa_required: true, challenge_to
 | `PATCH` | `/tenants/me/support-contact` | 👑 | Update the support contact (audited). Shown on `/verify` unless a product overrides it |
 | `GET` | `/tenants/me/release-gates` | 🏢 | Industry release-gate state (cosmetics `live`, pharmaceuticals `locked`) |
 | `POST` | `/tenants/{id}/approve` | 🛡️ | Approve a pending tenant |
-| `POST` | `/tenants/{id}/reject` | 🛡️ | Reject a pending tenant |
-| `POST` | `/tenants/{id}/request-info` | 🛡️ | Move tenant to `info_requested` |
+| `POST` | `/tenants/{id}/reject` | 🛡️ | Reject a pending tenant. Body `{ reason }` is **required**; the applicant sees it as `decision_reason` |
+| `POST` | `/tenants/{id}/request-info` | 🛡️ | Move tenant to `info_requested`. Body `{ reason }` is **required** (what the applicant must provide); shown as `decision_reason`. `approve` and `suspend` take an optional `reason` (audit only) |
 | `POST` | `/tenants/{id}/suspend` | 🛡️ | Suspend an approved tenant |
 
 ---
@@ -189,7 +189,7 @@ per-field `details`.
 
 ## Catalogue — Batches
 
-Batch `status` is `active`, `recalled` or `expired`. An `active` batch whose `expires_at` has passed is returned as `expired` (computed, not stored). `declared_quantity` is the same value as `quantity` (either name can be written; a value must be at least 1). Every batch response includes `product_name` (name · variant · size) and an `issuance` object:
+Batch `status` is `active`, `recalled` or `expired`. An `active` batch whose `expires_at` has passed is returned as `expired` (computed, not stored). `declared_quantity` is the same value as `quantity` (either name can be written; a value must be at least 1). Dates can be written and are returned as `manufacture_date` / `expiry` or as `manufactured_at` / `expires_at` (same values); `pack_format` is optional free text. A duplicate `batch_number` for the product is a `400` with `details.batch_number`. Every batch response includes `product_name` (name · variant · size) and an `issuance` object:
 
 ```json
 "issuance": { "requested": 20000, "generated": 19950, "failed": 50, "deactivated": 12 }
@@ -294,7 +294,7 @@ are not yet approved, or are suspended by staff, return `404 not_found`.
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/platform/tenants` | 🛡️ | List all tenants (filter by `status`; paginated) |
+| `GET` | `/platform/tenants` | 🛡️ | List all tenants (filter by `status`, repeatable: `?status=pending&status=info_requested`; paginated). Rows include `decision_reason` and `decided_at` |
 | `GET` | `/platform/tenants/{id}` | 🛡️ | Tenant detail with usage stats |
 | `GET` | `/platform/flags` | 🛡️ | Unreviewed risk flags across all tenants |
 | `GET` | `/platform/audit` | 🛡️ | Paginated audit log (filter by `action`, `tenant_id`) |

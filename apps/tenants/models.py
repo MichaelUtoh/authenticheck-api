@@ -21,6 +21,10 @@ class Tenant(BaseModel):
         max_length=20, choices=Status.choices, default=Status.PENDING, db_index=True
     )
     is_pharma = models.BooleanField(default=False, db_index=True)
+    # Latest platform decision that needs the applicant's attention (rejected / info requested).
+    # Shown to the tenant; cleared when the tenant is approved or suspended.
+    decision_reason = models.TextField(blank=True)
+    decided_at = models.DateTimeField(null=True, blank=True)
     # Default consumer-facing support contact; a product may override it.
     support_email = models.EmailField(blank=True)
     support_phone = models.CharField(max_length=32, blank=True)
