@@ -41,6 +41,14 @@ class AuthSession(BaseModel):
     )
     user_agent = models.CharField(max_length=200, blank=True)
     ip_prefix = models.CharField(max_length=50, blank=True)
+    # Active company for this session; re-issued as `tid`/`mid` on refresh.
+    active_membership = models.ForeignKey(
+        "tenants.Membership",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
 
     class Meta:
         indexes = [

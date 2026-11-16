@@ -335,6 +335,69 @@ def test_refresh_issues_new_access_token(user, jwt_client):
     assert "refresh_token" in response.cookies
 
 
+def _claims(token):
+    import jwt
+    from django.conf import settings
+
+    return jwt.decode(
+        token,
+        settings.JWT_SIGNING_KEY,
+        algorithms=["HS256"],
+        audience=settings.JWT_AUDIENCE,
+        issuer=settings.JWT_ISSUER,
+        options={"verify_exp": False},
+    )
+
+
+def _refresh_with_cookie(anon, response):
+    anon.cookies["refresh_token"] = response.cookies["refresh_token"].value
+    return anon.post("/api/v1/auth/refresh", HTTP_X_REQUESTED_WITH="XMLHttpRequest")
+
+
+def test_refresh_keeps_login_tenant(anon, user):
+    """AUTH-5: the refreshed access token carries the same tid/mid as the login token."""
+    from apps.tenants.models import Membership, Tenant
+
+    tenant = Tenant.objects.create(legal_name="Acme Ltd", status=Tenant.Status.APPROVED)
+    m = Membership.objects.create(
+        user=user, tenant=tenant, role=Membership.Role.OWNER, status=Membership.Status.ACTIVE
+    )
+    login = anon.post(
+        "/api/v1/auth/login", {"email": "alice@example.com", "password": "a-long-test-password"}
+    )
+    refreshed = _refresh_with_cookie(anon, login)
+    assert refreshed.status_code == 200
+    claims = _claims(refreshed.data["access_token"])
+    assert claims["tid"] == str(tenant.pk)
+    assert claims["mid"] == str(m.pk)
+
+
+def test_refresh_falls_back_to_first_approved_membership(anon, user):
+    """AUTH-5: with several memberships, refresh uses the first active, approved one."""
+    from apps.tenants.models import Membership, Tenant
+
+    pending = Tenant.objects.create(legal_name="Pending Ltd", status=Tenant.Status.PENDING)
+    approved = Tenant.objects.create(legal_name="Acme Ltd", status=Tenant.Status.APPROVED)
+    Membership.objects.create(user=user, tenant=pending, role=Membership.Role.OWNER)
+    m = Membership.objects.create(user=user, tenant=approved, role=Membership.Role.ADMIN)
+
+    login = anon.post(
+        "/api/v1/auth/login", {"email": "alice@example.com", "password": "a-long-test-password"}
+    )
+    refreshed = _refresh_with_cookie(anon, login)
+    claims = _claims(refreshed.data["access_token"])
+    assert claims["tid"] == str(approved.pk)
+    assert claims["mid"] == str(m.pk)
+
+
+def test_refresh_without_memberships_has_no_tid(anon, user):
+    login = anon.post(
+        "/api/v1/auth/login", {"email": "alice@example.com", "password": "a-long-test-password"}
+    )
+    refreshed = _refresh_with_cookie(anon, login)
+    assert "tid" not in _claims(refreshed.data["access_token"])
+
+
 def test_refresh_rotates_token(user, jwt_client):
     from apps.identity.services.token_service import hash_token
 

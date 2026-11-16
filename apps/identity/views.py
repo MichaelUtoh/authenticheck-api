@@ -261,6 +261,8 @@ class LoginView(APIView):
             m = memberships[0]
             tid = str(m.tenant_id)
             mid = str(m.id)
+            session.active_membership = m
+            session.save(update_fields=["active_membership", "updated_at"])
 
         access_token = token_service.issue_access_token(
             user, session.id, ["pwd"], time.time(), tid=tid, mid=mid
@@ -398,11 +400,14 @@ class RefreshView(APIView):
                 new_raw = session_service.rotate_refresh(session, is_admin=session.user.is_staff)
 
         user = session.user
+        membership = session_service.resolve_session_membership(session)
         access_token = token_service.issue_access_token(
             user,
             session.id,
             ["pwd"],  # amr preserved in Phase 6 when we store it on the session
             time.time(),
+            tid=str(membership.tenant_id) if membership else None,
+            mid=str(membership.id) if membership else None,
         )
 
         response = Response({"access_token": access_token})

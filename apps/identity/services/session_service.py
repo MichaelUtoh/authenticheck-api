@@ -60,6 +60,31 @@ def create_session(user, request, is_admin: bool = False) -> tuple[AuthSession, 
     return session, raw
 
 
+def resolve_session_membership(session: AuthSession):
+    """Membership whose tenant a refreshed access token should carry (`tid`/`mid`).
+
+    Uses the session's stored active membership while it is still active and its tenant
+    approved; otherwise falls back to the user's first active membership in an approved
+    tenant, and stores that choice. Returns None when the user has no usable membership."""
+    from apps.tenants.models import Membership, Tenant
+
+    usable = Membership.objects.filter(
+        user_id=session.user_id,
+        status=Membership.Status.ACTIVE,
+        tenant__status=Tenant.Status.APPROVED,
+    ).select_related("tenant")
+
+    membership = None
+    if session.active_membership_id:
+        membership = usable.filter(pk=session.active_membership_id).first()
+    if membership is None:
+        membership = usable.order_by("created_at").first()
+    if membership is not None and membership.pk != session.active_membership_id:
+        session.active_membership = membership
+        session.save(update_fields=["active_membership", "updated_at"])
+    return membership
+
+
 def rotate_refresh(session: AuthSession, is_admin: bool = False) -> str:
     """Issue a new refresh token, archive the old hash for grace-window reuse detection.
     Returns the raw new refresh token. Must be called inside select_for_update()."""
