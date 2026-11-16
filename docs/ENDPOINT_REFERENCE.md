@@ -294,7 +294,7 @@ are not yet approved, or are suspended by staff, return `404 not_found`.
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/platform/tenants` | 🛡️ | List all tenants (filter by `status`, repeatable: `?status=pending&status=info_requested`; paginated). Rows include `decision_reason` and `decided_at` |
+| `GET` | `/platform/tenants` | 🛡️ | List all tenants (filter by `status`, repeatable: `?status=pending&status=info_requested`; paginated). Rows include `decision_reason`, `decided_at`, `owner_email`, `owner_name`, `brands: [{ name }]` and `submitted_at` |
 | `GET` | `/platform/tenants/{id}` | 🛡️ | Tenant detail with usage stats |
 | `GET` | `/platform/flags` | 🛡️ | Unreviewed risk flags across all tenants |
 | `GET` | `/platform/audit` | 🛡️ | Paginated audit log (filter by `action`, `tenant_id`) |

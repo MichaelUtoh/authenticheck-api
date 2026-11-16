@@ -5,19 +5,37 @@ from apps.risk.models import RiskFlag
 from apps.tenants.models import Tenant
 
 
-class PlatformTenantSerializer(serializers.ModelSerializer):
+class _TenantExtrasMixin(serializers.Serializer):
+    """owner and brands, filled in by attach_tenant_extras() so a page costs two queries."""
+
+    owner_email = serializers.SerializerMethodField()
+    owner_name = serializers.SerializerMethodField()
+    brands = serializers.SerializerMethodField()
+    submitted_at = serializers.DateTimeField(source="created_at", read_only=True)
+
+    def get_owner_email(self, obj):
+        return getattr(obj, "_owner_email", "")
+
+    def get_owner_name(self, obj):
+        return getattr(obj, "_owner_name", "")
+
+    def get_brands(self, obj):
+        return getattr(obj, "_brands", [])
+
+
+class PlatformTenantSerializer(_TenantExtrasMixin, serializers.ModelSerializer):
     member_count = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = Tenant
         fields = [
             "id", "legal_name", "trading_name", "status", "decision_reason", "decided_at",
-            "member_count", "created_at",
+            "owner_email", "owner_name", "brands", "member_count", "submitted_at", "created_at",
         ]
         read_only_fields = fields
 
 
-class PlatformTenantDetailSerializer(serializers.ModelSerializer):
+class PlatformTenantDetailSerializer(_TenantExtrasMixin, serializers.ModelSerializer):
     member_count = serializers.IntegerField(read_only=True)
     active_codes = serializers.IntegerField(read_only=True)
     open_flags = serializers.IntegerField(read_only=True)
@@ -26,9 +44,43 @@ class PlatformTenantDetailSerializer(serializers.ModelSerializer):
         model = Tenant
         fields = [
             "id", "legal_name", "trading_name", "status", "decision_reason", "decided_at",
-            "member_count", "active_codes", "open_flags", "created_at",
+            "owner_email", "owner_name", "brands", "member_count", "active_codes",
+            "open_flags", "submitted_at", "created_at",
         ]
         read_only_fields = fields
+
+
+def attach_tenant_extras(tenants) -> None:
+    """Set _owner_email, _owner_name and _brands on each tenant, in two queries.
+
+    The owner is the earliest active member with the owner role; brands are the active ones."""
+    from apps.catalogue.models import Brand
+    from apps.tenants.models import Membership
+
+    ids = [t.pk for t in tenants]
+    owners = {}
+    for m in (
+        Membership.objects.filter(
+            tenant_id__in=ids, role=Membership.Role.OWNER, status=Membership.Status.ACTIVE
+        )
+        .select_related("user")
+        .order_by("-created_at")  # earliest wins: it overwrites later ones below
+    ):
+        owners[m.tenant_id] = m.user
+
+    brands: dict = {}
+    for tenant_id, name in (
+        Brand.unscoped.filter(tenant_id__in=ids, is_active=True)
+        .order_by("name")
+        .values_list("tenant_id", "name")
+    ):
+        brands.setdefault(tenant_id, []).append({"name": name})
+
+    for t in tenants:
+        owner = owners.get(t.pk)
+        t._owner_email = owner.email if owner else ""
+        t._owner_name = owner.full_name if owner else ""
+        t._brands = brands.get(t.pk, [])
 
 
 class PlatformRiskFlagSerializer(serializers.ModelSerializer):

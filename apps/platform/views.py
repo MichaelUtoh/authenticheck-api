@@ -25,6 +25,7 @@ from .serializers import (
     PlatformRiskFlagSerializer,
     PlatformTenantDetailSerializer,
     PlatformTenantSerializer,
+    attach_tenant_extras,
 )
 
 _STAFF_PERMS = [IsAuthenticated, IsAdminUser, IsMFAVerified]
@@ -69,6 +70,7 @@ class PlatformTenantListView(APIView):
 
         paginator = StandardPagination()
         page = paginator.paginate_queryset(qs, request)
+        attach_tenant_extras(page)
         return paginator.get_paginated_response(PlatformTenantSerializer(page, many=True).data)
 
 
@@ -102,6 +104,7 @@ class PlatformTenantDetailView(APIView):
             tenant_id=pk, is_reviewed=False
         ).count()
 
+        attach_tenant_extras([tenant])
         return Response(PlatformTenantDetailSerializer(tenant).data)
 
 

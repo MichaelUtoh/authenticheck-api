@@ -110,6 +110,41 @@ def test_platform_tenant_list_accepts_repeated_status(staff_client):
     assert {r["legal_name"] for r in response.data["results"]} == {"A", "B"}
 
 
+def test_platform_tenant_rows_include_owner_and_brands(staff_client, tenant, owner):
+    from apps.catalogue.models import Brand
+
+    owner.full_name = "Ada Okafor"
+    owner.save()
+    with tenant_context(tenant.pk):
+        Brand.objects.create(name="Zeta", slug="zeta")
+        Brand.objects.create(name="Alpha", slug="alpha")
+        Brand.objects.create(name="Old", slug="old", is_active=False)
+
+    row = next(
+        r for r in staff_client.get("/api/v1/platform/tenants").data["results"]
+        if r["id"] == str(tenant.pk)
+    )
+    assert row["owner_email"] == "owner@platform.test"
+    assert row["owner_name"] == "Ada Okafor"
+    assert row["brands"] == [{"name": "Alpha"}, {"name": "Zeta"}]
+    assert row["submitted_at"] == row["created_at"]
+
+
+def test_platform_tenant_without_owner_has_blank_owner(staff_client):
+    t = Tenant.objects.create(legal_name="No Owner Ltd")
+    row = next(
+        r for r in staff_client.get("/api/v1/platform/tenants").data["results"]
+        if r["id"] == str(t.pk)
+    )
+    assert row["owner_email"] == "" and row["owner_name"] == "" and row["brands"] == []
+
+
+def test_platform_tenant_detail_includes_owner_and_brands(staff_client, tenant, owner):
+    response = staff_client.get(f"/api/v1/platform/tenants/{tenant.pk}")
+    assert response.data["owner_email"] == "owner@platform.test"
+    assert response.data["brands"] == []
+
+
 def test_platform_tenant_list_rejects_unknown_status(staff_client):
     response = staff_client.get("/api/v1/platform/tenants?status=nope")
     assert response.status_code == 400
