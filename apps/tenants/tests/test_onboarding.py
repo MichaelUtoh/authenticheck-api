@@ -27,11 +27,19 @@ def staff_client(staff):
     return client
 
 
+REGISTRATION = {
+    "legal_name": "Acme Cosmetics Ltd",
+    "industry": "cosmetics",
+    "rc_number": "RC1234567",
+    "city": "Lagos",
+}
+
+
 @pytest.fixture
 def registered_tenant(user):
     client = APIClient()
     client.force_authenticate(user=user)
-    response = client.post("/api/v1/tenants/register", {"legal_name": "Acme Cosmetics Ltd"})
+    response = client.post("/api/v1/tenants/register", REGISTRATION)
     assert response.status_code == 201
     return Tenant.objects.get(pk=response.data["id"])
 
@@ -42,11 +50,70 @@ def registered_tenant(user):
 def test_register_creates_tenant_and_owner_membership(user):
     client = APIClient()
     client.force_authenticate(user=user)
-    response = client.post("/api/v1/tenants/register", {"legal_name": "Acme Cosmetics Ltd"})
+    response = client.post("/api/v1/tenants/register", REGISTRATION)
     assert response.status_code == 201
     assert response.data["status"] == Tenant.Status.PENDING
+    assert response.data["industry"] == "cosmetics"
+    assert response.data["rc_number"] == "RC1234567"
+    assert response.data["city"] == "Lagos"
     membership = Membership.objects.get(user=user)
     assert membership.role == Membership.Role.OWNER
+
+
+@pytest.mark.parametrize("missing", ["industry", "rc_number", "city"])
+def test_register_requires_industry_rc_number_and_city(user, missing):
+    client = APIClient()
+    client.force_authenticate(user=user)
+    body = {k: v for k, v in REGISTRATION.items() if k != missing}
+    response = client.post("/api/v1/tenants/register", body)
+    assert response.status_code == 400
+    assert missing in response.data["error"]["details"]
+    assert not Tenant.objects.exists()
+
+
+def test_register_rejects_unknown_industry(user):
+    client = APIClient()
+    client.force_authenticate(user=user)
+    response = client.post("/api/v1/tenants/register", {**REGISTRATION, "industry": "weapons"})
+    assert response.status_code == 400
+    assert "industry" in response.data["error"]["details"]
+
+
+def test_register_normalises_industry_and_rc_number(user):
+    client = APIClient()
+    client.force_authenticate(user=user)
+    response = client.post(
+        "/api/v1/tenants/register",
+        {**REGISTRATION, "industry": " Cosmetics ", "rc_number": "rc 123-4567", "city": " Abuja "},
+    )
+    assert response.status_code == 201
+    assert response.data["industry"] == "cosmetics"
+    assert response.data["rc_number"] == "RC1234567"
+    assert response.data["city"] == "Abuja"
+
+
+def test_registering_as_pharmaceuticals_does_not_unlock_pharma(user):
+    client = APIClient()
+    client.force_authenticate(user=user)
+    response = client.post(
+        "/api/v1/tenants/register", {**REGISTRATION, "industry": "pharmaceuticals"}
+    )
+    assert response.status_code == 201
+    assert Tenant.objects.get(pk=response.data["id"]).is_pharma is False
+
+
+def test_registration_industries_available_without_a_company(user):
+    client = APIClient()
+    client.force_authenticate(user=user)  # signed in, but no membership yet
+    response = client.get("/api/v1/tenants/industries")
+    assert response.status_code == 200
+    keys = {row["key"] for row in response.data}
+    assert {"cosmetics", "pharmaceuticals"} <= keys
+    assert all({"key", "label"} <= set(row) for row in response.data)
+
+
+def test_registration_industries_requires_auth():
+    assert APIClient().get("/api/v1/tenants/industries").status_code == 401
 
 
 def test_register_requires_auth():

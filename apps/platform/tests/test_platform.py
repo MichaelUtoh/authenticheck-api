@@ -130,6 +130,19 @@ def test_platform_tenant_rows_include_owner_and_brands(staff_client, tenant, own
     assert row["submitted_at"] == row["created_at"]
 
 
+def test_platform_tenant_rows_include_registration_details(staff_client):
+    t = Tenant.objects.create(
+        legal_name="Reg Ltd", industry="cosmetics", rc_number="RC99", city="Kano"
+    )
+    row = next(
+        r for r in staff_client.get("/api/v1/platform/tenants").data["results"]
+        if r["id"] == str(t.pk)
+    )
+    assert (row["industry"], row["rc_number"], row["city"]) == ("cosmetics", "RC99", "Kano")
+    detail = staff_client.get(f"/api/v1/platform/tenants/{t.pk}").data
+    assert (detail["industry"], detail["rc_number"], detail["city"]) == ("cosmetics", "RC99", "Kano")
+
+
 def test_platform_tenant_without_owner_has_blank_owner(staff_client):
     t = Tenant.objects.create(legal_name="No Owner Ltd")
     row = next(

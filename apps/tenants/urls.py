@@ -8,6 +8,7 @@ from .invitations import (
     InvitationResendView,
 )
 from .views import (
+    RegistrationIndustriesView,
     ReleaseGatesView,
     SupportContactView,
     TenantMemberDetailView,
@@ -21,6 +22,7 @@ from .views import (
 )
 
 urlpatterns = [
+    path("tenants/industries", RegistrationIndustriesView.as_view(), name="tenant-industries"),
     path("tenants/register", TenantRegisterView.as_view(), name="tenant-register"),
     path("tenants/me", TenantDetailView.as_view(), name="tenant-detail"),
     path("tenants/me/members", TenantMembersView.as_view(), name="tenant-members"),

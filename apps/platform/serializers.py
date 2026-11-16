@@ -29,8 +29,8 @@ class PlatformTenantSerializer(_TenantExtrasMixin, serializers.ModelSerializer):
     class Meta:
         model = Tenant
         fields = [
-            "id", "legal_name", "trading_name", "status", "decision_reason", "decided_at",
-            "owner_email", "owner_name", "brands", "member_count", "submitted_at", "created_at",
+            "id", "legal_name", "trading_name", "industry", "rc_number", "city", "status",
+            "decision_reason", "decided_at", "owner_email", "owner_name", "brands", "member_count", "submitted_at", "created_at",
         ]
         read_only_fields = fields
 
@@ -43,8 +43,9 @@ class PlatformTenantDetailSerializer(_TenantExtrasMixin, serializers.ModelSerial
     class Meta:
         model = Tenant
         fields = [
-            "id", "legal_name", "trading_name", "status", "decision_reason", "decided_at",
-            "owner_email", "owner_name", "brands", "member_count", "active_codes",
+            "id", "legal_name", "trading_name", "industry", "rc_number", "city", "status",
+            "decision_reason", "decided_at", "owner_email", "owner_name", "brands",
+            "member_count", "active_codes",
             "open_flags", "submitted_at", "created_at",
         ]
         read_only_fields = fields

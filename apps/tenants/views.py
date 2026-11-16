@@ -2,6 +2,7 @@ import logging
 
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema, extend_schema_view
+from rest_framework import serializers as drf_serializers
 from rest_framework import status
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.permissions import IsAdminUser, IsAuthenticated
@@ -43,6 +44,29 @@ _ALLOWED_TRANSITIONS = {
         "approve": Tenant.Status.APPROVED,
     },
 }
+
+
+@extend_schema(
+    responses={200: drf_serializers.ListField()},
+    tags=["Tenants"],
+    summary="Industries a company can register under",
+    description=(
+        "For the registration form. Any signed-in user can call it (unlike "
+        "`/catalogue/industries`, which needs a company). Returns `[{ key, label }]`."
+    ),
+)
+class RegistrationIndustriesView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from apps.catalogue.models import Industry, Product
+
+        rows = [
+            {"key": i.key, "label": i.label} for i in Industry.objects.filter(is_active=True)
+        ]
+        if not rows:  # taxonomy not seeded: fall back to the built-in choices
+            rows = [{"key": k, "label": label} for k, label in Product.Industry.choices]
+        return Response(rows)
 
 
 @extend_schema(

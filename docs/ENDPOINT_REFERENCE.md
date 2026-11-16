@@ -89,7 +89,8 @@ Staff login flow: `POST /auth/login` returns `{ mfa_required: true, challenge_to
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `POST` | `/tenants/register` | 🔑 | Register a new manufacturer tenant (creator becomes `owner`) |
+| `GET` | `/tenants/industries` | 🔑 | Industries for the registration form: `[{ key, label }]`. Works before the user has a company (unlike `/catalogue/industries`) |
+| `POST` | `/tenants/register` | 🔑 | Register a new manufacturer tenant (creator becomes `owner`). Body: `legal_name`, `trading_name?`, **`industry`** (key from `GET /tenants/industries`), **`rc_number`** (CAC), **`city`**; the last three are required |
 | `GET` | `/tenants/me` | 🏢 | Active tenant details |
 | `GET` | `/tenants/me/members` | 👑 | List active tenant members (`email`, `full_name`, `role`, `can_submit_products`) |
 | `PATCH` | `/tenants/me/members/{id}` | 👑 | Enable `can_submit_products` for production/quality staff. Changing `role` (`admin`, `production_quality`, `investigator`, `viewer`; legacy `editor`/`member` are accepted and stored as `production_quality`) is **owner only**; the owner's own role cannot change |
@@ -294,7 +295,7 @@ are not yet approved, or are suspended by staff, return `404 not_found`.
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/platform/tenants` | 🛡️ | List all tenants (filter by `status`, repeatable: `?status=pending&status=info_requested`; paginated). Rows include `decision_reason`, `decided_at`, `owner_email`, `owner_name`, `brands: [{ name }]` and `submitted_at` |
+| `GET` | `/platform/tenants` | 🛡️ | List all tenants (filter by `status`, repeatable: `?status=pending&status=info_requested`; paginated). Rows include `industry`, `rc_number`, `city`, `decision_reason`, `decided_at`, `owner_email`, `owner_name`, `brands: [{ name }]` and `submitted_at` |
 | `GET` | `/platform/tenants/{id}` | 🛡️ | Tenant detail with usage stats |
 | `GET` | `/platform/flags` | 🛡️ | Unreviewed risk flags across all tenants |
 | `GET` | `/platform/audit` | 🛡️ | Paginated audit log (filter by `action`, `tenant_id`) |

@@ -355,6 +355,11 @@ The tenant starts in `pending` status and must be approved by platform staff.
 |---|---|---|
 | `legal_name` | string | yes |
 | `trading_name` | string | no |
+| `industry` | string | yes. A key from `GET /tenants/industries` (e.g. `cosmetics`, `pharmaceuticals`); trimmed and lower-cased. Choosing `pharmaceuticals` does not unlock pharma issuance |
+| `rc_number` | string | yes. CAC registration number, max 32 characters; stored upper-case without spaces or dashes |
+| `city` | string | yes. Max 120 characters |
+
+Missing or invalid fields return `400 validation_error` with `error.details.<field>`.
 
 **Response `201`** — [Tenant object](#tenant-object)
 

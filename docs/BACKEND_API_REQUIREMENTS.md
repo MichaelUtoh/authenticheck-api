@@ -3,9 +3,34 @@
 One living list of everything the frontend needs from the backend that `ENDPOINT_REFERENCE.md` does not yet give it, grouped by area. It is meant to be **kept and edited**, not rewritten each time.
 
 - Last reviewed against `ENDPOINT_REFERENCE.md`: **2026-10-30**
-- **Frontend: see "staff sign-in with MFA is now available (2026-11-16)" below.**
+- **Frontend: start with "Backend changes to adopt (2026-11-16)" below, a checklist of everything that changed.**
+- Frontend: see also "staff sign-in with MFA is now available (2026-11-16)".
 - Section 6 (public verification) updated **2026-11-05** after reading the backend source (`apps/issuance/tasks.py`, `apps/verification/views.py`): see 6.1 and 6.2.
 - Frontend state at that date: **Products tab built** against the endpoints below. Batches & codes and Investigations are still on sample data; their detailed specs stay in their own docs and are indexed in [section 5](#5-batches--codes) and [section 8](#8-investigations).
+
+---
+
+## Backend changes to adopt (2026-11-16)
+
+Everything below is **implemented, tested and on `main`**. Run `python manage.py migrate` against any database first (new migrations: identity 0005-0006, catalogue 0006, tenants 0007-0008). Items marked **Breaking** need a frontend change or the call fails.
+
+| # | Change | Frontend action | Breaking? |
+|---|---|---|---|
+| 1 | **Company registration collects `industry`, `rc_number` (CAC) and `city`** on `POST /tenants/register`. Industries for the dropdown: `GET /tenants/industries` → `[{ key, label }]` (works before the user has a company). Errors: `error.details.industry / rc_number / city`. Returned on `GET /tenants/me` and on the platform tenant rows. | Add three fields to the registration form; populate the select from `/tenants/industries`. Tenants registered earlier have them blank: show "-". | **Yes**: registration returns `400` without them |
+| 2 | **Reject and Request-info need a reason.** `POST /tenants/{id}/reject` and `/request-info` return `400` with `details.reason` when `reason` is blank. The reason is stored as `decision_reason` (+ `decided_at`) and shown to the applicant on `GET /tenants/me` and in the platform rows. Approve and suspend: `reason` optional (audit only) and clears `decision_reason`. | Make the reason box required for those two actions. Show `decision_reason` to the applicant while the status is `rejected` or `info_requested`. | **Yes**: a blank reason is rejected |
+| 3 | **Tenant list filter is repeatable:** `GET /platform/tenants?status=pending&status=info_requested`. An unknown status returns `400`. | Use it for the "waiting" view; the whole queue now shows. | No |
+| 4 | **Platform tenant rows** (list and detail) now include `industry`, `rc_number`, `city`, `owner_email`, `owner_name`, `brands: [{ name }]`, `submitted_at` (same value as `created_at` for now), `decision_reason`, `decided_at`. Owner is the earliest active owner membership (blank if none); brands are the active ones, sorted by name. | Replace the "-" placeholders in the Tenant applications page. | No |
+| 5 | **Batch create and edit accept the frontend names:** `manufacture_date`, `expiry`, `declared_quantity`, `pack_format` (the original `manufactured_at`, `expires_at`, `quantity` still work). Responses and the `GET /catalogue/batches` rows return both sets. Dates `YYYY-MM-DD`. Errors are keyed by the name you sent. | Send and read the frontend names; drop the mapping workarounds. | No |
+| 6 | **Duplicate batch number** for the same product returns `400 validation_error` with `details.batch_number` (it used to be a server error). | Show it under the batch number input. | No |
+| 7 | **Staff sign-in with MFA** (`/auth/mfa/enroll`, `/enroll/confirm`, `/verify`) and the staff token keeps `otp` across refreshes. | See the section below. | n/a |
+| 8 | **Session refresh keeps the active company** (`tid`) so company routes no longer return `403` after a page refresh (AUTH-5). | None; remove any workaround that re-logs in after a refresh. | No |
+
+### Still not available (do not build against these)
+
+- Tenant review extras: evidence checklist, operations at a glance (PLT-11). The activity feed needs only a frontend page over the existing `GET /platform/audit`.
+- Batch `attention[]` and a `needs_attention` filter (BCH-12). Derive *Partial* (failed > 0) and *Expires soon* (60 days) in the UI.
+- An authenticator reset for staff who lose their device.
+- Duplicate-CAC-number detection at registration.
 
 ---
 
@@ -88,14 +113,14 @@ Verified against the code on 2026-11-16. Each item says what the frontend reads 
 |---|---|---|
 | `id`, `status`, `legal_name`, `trading_name`, `created_at` | Returned | – |
 | `decision_reason`, `decided_at` | Returned (new) | – |
-| `industry` | **Not stored** | New tenant field, collected at registration (cosmetics / pharma; note `is_pharma` already exists) |
-| `rc_number` (CAC number) | **Not stored** | New tenant field, collected at registration |
+| `industry` | Returned (new). Required at registration; a key from `GET /tenants/industries`. Tenants registered earlier have it blank | – |
+| `rc_number` (CAC number) | Returned (new). Required at registration; stored upper-case with no spaces or dashes | – |
 | `owner_email`, `owner_name` | Returned (new): the earliest active member with the owner role; blank when none | – |
-| `city` | **Not stored** | New tenant field, collected at registration |
+| `city` | Returned (new). Required at registration | – |
 | `brands: [{ name }]` | Returned (new): active brands, sorted by name | – |
 | `submitted_at` | Returned (new), currently the same value as `created_at` | A separate field only if resubmission after "info requested" should reset it |
 
-**Needs a decision from the Product Owner:** which of `industry`, `rc_number` and `city` the registration form must collect, and whether they are required. Until then the frontend shows "-" for these columns. `POST /tenants/register` accepts only `legal_name` and `trading_name` today.
+**Registration form (frontend action).** `POST /tenants/register` now requires `industry`, `rc_number` and `city` besides `legal_name` (and optional `trading_name`). Populate the industry select from `GET /tenants/industries` (`[{ key, label }]`; use `key` as the value). That endpoint works for a signed-in user with no company yet; `/catalogue/industries` does not. Show field errors from `error.details.<field>`. The same three fields are returned on `GET /tenants/me`. Tenants registered before this change have them blank (show "-").
 
 **Tenant review extras (PLT-11)**, not built on the backend: evidence checklist (CAC certificate, brand ownership, NAFDAC registrations, signatory, support contact), operations at a glance (verification p95, error rate, failed jobs, queue backlog, TLS expiry, last restore test), recent privileged activity (`GET /platform/audit` exists, so this one only needs the frontend page). Optional; say which ones the review panel must have.
 
@@ -264,7 +289,7 @@ The review queue at `/platform/products` exists on the frontend. It needs more t
 | PLT-6 | `gtin_conflict_resolution` format: free text, or `{ action: "allow_duplicate"\|"..." , note }`? Also: a conflict preview (`conflicting_product` summary) so the reviewer can see what clashes. | Confirm | Confirm | Frontend sends a free-text string. |
 | PLT-7 | Notify the submitter on a decision (email and/or webhook event `product.approved`, `product.changes_requested`, `product.rejected`). | Optional | Open | Users find out when they open the product. |
 | PLT-8 | Queue filters: `tenant_id`, `industry`, `has_pending_revision`, `ordering` (oldest first is the default). | Optional | Open | – |
-| PLT-9 | Shape of `GET /platform/tenants` rows and filters. The Tenant applications page (`/platform/tenants`) reads `{ count, results: [{ id, status, legal_name, trading_name, industry, rc_number, owner_email, owner_name, city, brands: [{name}], created_at, submitted_at }] }` (a plain array also works) and sends `status` **repeated** (`?status=pending&status=info_requested`) for the "waiting" view. Please confirm the names, or accept a repeatable `status`. | **Required** | **Partly done 2026-11-16.** Repeatable `status` is done (unknown value returns `400`), and rows now carry `decision_reason` and `decided_at`. `owner_email`, `owner_name`, `brands` and `submitted_at` are now returned too (list and detail). **Still missing, needs a product decision:** `industry`, `rc_number`, `city`. The Tenant model and registration form do not collect them yet (see "Fields the backend still needs" below). | Missing fields show "—"; if only one `status` is accepted the "waiting" view shows only part of the queue. |
+| PLT-9 | Shape of `GET /platform/tenants` rows and filters. The Tenant applications page (`/platform/tenants`) reads `{ count, results: [{ id, status, legal_name, trading_name, industry, rc_number, owner_email, owner_name, city, brands: [{name}], created_at, submitted_at }] }` (a plain array also works) and sends `status` **repeated** (`?status=pending&status=info_requested`) for the "waiting" view. Please confirm the names, or accept a repeatable `status`. | **Required** | **Partly done 2026-11-16.** Repeatable `status` is done (unknown value returns `400`), and rows now carry `decision_reason` and `decided_at`. `owner_email`, `owner_name`, `brands` and `submitted_at` are now returned too (list and detail). `industry`, `rc_number` and `city` are now collected at registration and returned on list and detail (done 2026-11-16, see below). **Frontend: the registration form must now send them, or `POST /tenants/register` returns `400`.** | Missing fields show "—"; if only one `status` is accepted the "waiting" view shows only part of the queue. |
 | PLT-10 | Body of `POST /tenants/{id}/approve`, `/reject`, `/request-info`, `/suspend`. The frontend sends `{ "reason": "..." }` (required in the UI, audited). Please confirm the key (`reason` vs `review_note`) and that `reject` / `request-info` reasons reach the applicant. | **Required** | **Done 2026-11-16.** The key is `reason`. `reject` and `request-info` now **require** it (`400` with `details.reason` if blank); it is saved as `decision_reason` plus `decided_at` and returned on `GET /tenants/me` and the platform tenant rows, so the applicant sees it. `approve` and `suspend` keep it optional (audit only) and clear `decision_reason`. | A wrong key returns `400`; the decision is not recorded. |
 | PLT-11 | The design's tenant-review extras have no endpoint yet, so they are not shown: the **evidence checklist** (CAC certificate, brand ownership, NAFDAC registrations, signatory, support contact: `Checked` / `Manufacturer-provided`), **operations at a glance** (verification p95, error rate, failed jobs, queue backlog, TLS expiry, last restore test), **recent privileged activity** (`GET /platform/audit` exists but the page isn't built), and a pending-application count for the sidebar badge (the frontend uses `count` from the list). | Optional | Open | The review panel shows only company details and the decision form. |
 

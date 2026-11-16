@@ -7,20 +7,48 @@ class TenantSerializer(serializers.ModelSerializer):
     class Meta:
         model = Tenant
         fields = [
-            "id", "legal_name", "trading_name", "status", "decision_reason", "decided_at",
+            "id", "legal_name", "trading_name", "industry", "rc_number", "city", "status",
+            "decision_reason", "decided_at", "created_at",
+        ]
+        read_only_fields = [
+            "id", "industry", "rc_number", "city", "status", "decision_reason", "decided_at",
             "created_at",
         ]
-        read_only_fields = ["id", "status", "decision_reason", "decided_at", "created_at"]
 
 
 class TenantRegisterSerializer(serializers.Serializer):
     legal_name = serializers.CharField(max_length=255)
     trading_name = serializers.CharField(max_length=255, default="", allow_blank=True)
+    industry = serializers.CharField(
+        max_length=40, help_text="Key from GET /catalogue/industries, e.g. cosmetics."
+    )
+    rc_number = serializers.CharField(max_length=32, help_text="CAC registration number, e.g. RC1234567.")
+    city = serializers.CharField(max_length=120)
+
+    def validate_industry(self, value):
+        from apps.catalogue.models import Industry, Product
+
+        key = value.strip().lower()
+        keys = set(Industry.objects.filter(is_active=True).values_list("key", flat=True))
+        keys = keys or {choice for choice, _ in Product.Industry.choices}
+        if key not in keys:
+            raise serializers.ValidationError(f"Unknown industry. Use one of: {', '.join(sorted(keys))}.")
+        return key
+
+    def validate_rc_number(self, value):
+        # Store canonically: upper-case, no spaces or dashes (RC 123-456 -> RC123456).
+        canonical = "".join(ch for ch in value.upper() if ch not in " -")
+        if len(canonical) < 3:
+            raise serializers.ValidationError("Enter the CAC registration number.")
+        return canonical
 
     def create(self, validated_data):
         return Tenant.objects.create(
             legal_name=validated_data["legal_name"],
             trading_name=validated_data.get("trading_name", ""),
+            industry=validated_data["industry"],
+            rc_number=validated_data["rc_number"],
+            city=validated_data["city"].strip(),
         )
 
 

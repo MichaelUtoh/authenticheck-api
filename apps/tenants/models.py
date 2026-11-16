@@ -21,6 +21,11 @@ class Tenant(BaseModel):
         max_length=20, choices=Status.choices, default=Status.PENDING, db_index=True
     )
     is_pharma = models.BooleanField(default=False, db_index=True)
+    # Collected at registration so platform staff can review the application. Blank on tenants
+    # registered before these were required.
+    industry = models.CharField(max_length=40, blank=True, db_index=True)  # Industry.key
+    rc_number = models.CharField(max_length=32, blank=True)  # CAC registration number
+    city = models.CharField(max_length=120, blank=True)
     # Latest platform decision that needs the applicant's attention (rejected / info requested).
     # Shown to the tenant; cleared when the tenant is approved or suspended.
     decision_reason = models.TextField(blank=True)
