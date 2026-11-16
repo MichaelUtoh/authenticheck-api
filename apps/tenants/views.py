@@ -11,8 +11,11 @@ from rest_framework.views import APIView
 
 from apps.audit import services as audit
 
+from apps.core.exceptions import ApiError
+
 from .models import Membership, Tenant
 from .permissions import HasActiveTenantMembership, IsMFAVerified, IsOwnerOrAdmin
+from .rc import rc_duplicates
 from .serializers import (
     MembershipSerializer,
     MembershipUpdateSerializer,
@@ -97,6 +100,7 @@ class TenantRegisterView(APIView):
             tenant=tenant,
             target=tenant,
             after={"legal_name": tenant.legal_name, "status": tenant.status},
+            metadata={"rc_duplicate_of": [str(t.pk) for t in rc_duplicates(tenant)]},
         )
         return Response(TenantSerializer(tenant).data, status=status.HTTP_201_CREATED)
 
@@ -146,12 +150,32 @@ class _TenantStatusTransitionView(APIView):
         if self._action in _REASON_REQUIRED and not reason:
             raise ValidationError({"reason": ["A reason is required; the applicant is shown it."]})
 
+        resolution = ""
+        if self._action == "approve":
+            clashes = list(rc_duplicates(tenant))
+            resolution = str(request.data.get("rc_conflict_resolution", "")).strip()
+            if clashes and not resolution and not tenant.rc_conflict_resolution:
+                raise ApiError(
+                    409, "rc_number_conflict",
+                    "This CAC number is registered to another company. Investigate and record a "
+                    "resolution (rc_conflict_resolution) before approving.",
+                    {"rc_number": tenant.rc_number,
+                     "duplicates": [{"id": str(t.pk), "legal_name": t.legal_name, "status": t.status}
+                                    for t in clashes]},
+                )
+            if clashes and resolution:
+                tenant.rc_conflict_resolution = resolution
+
         before = {"status": tenant.status}
         tenant.status = allowed[self._action]
         # Reasons for reject / request-info reach the applicant; approve and suspend clear them.
         tenant.decision_reason = reason if self._action in _REASON_REQUIRED else ""
         tenant.decided_at = timezone.now() if self._action in _REASON_REQUIRED else None
-        tenant.save(update_fields=["status", "decision_reason", "decided_at", "updated_at"])
+        tenant.save(
+            update_fields=[
+                "status", "decision_reason", "decided_at", "rc_conflict_resolution", "updated_at",
+            ]
+        )
 
         audit.record(
             action=f"tenant.{self._action}",
@@ -160,7 +184,7 @@ class _TenantStatusTransitionView(APIView):
             target=tenant,
             before=before,
             after={"status": tenant.status},
-            reason=reason,
+            reason=reason or resolution,
         )
         return Response(TenantSerializer(tenant).data)
 

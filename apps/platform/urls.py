@@ -5,6 +5,9 @@ from .views import (
     PlatformCategoryListView,
     PlatformIndustryDetailView,
     PlatformIndustryListView,
+    PlatformOpsView,
+    PlatformStaffListView,
+    PlatformStaffResetMFAView,
     PlatformProductApproveView,
     PlatformProductCorrectView,
     PlatformProductListView,
@@ -15,11 +18,17 @@ from .views import (
     PlatformAuditLogView,
     PlatformFlagListView,
     PlatformTenantDetailView,
+    PlatformTenantEvidenceView,
     PlatformTenantListView,
     RegulatoryRefVerifyView,
 )
 
 urlpatterns = [
+    path(
+        "platform/tenants/<uuid:pk>/evidence/<str:key>",
+        PlatformTenantEvidenceView.as_view(),
+        name="platform-tenant-evidence",
+    ),
     path("platform/tenants", PlatformTenantListView.as_view(), name="platform-tenant-list"),
     path(
         "platform/tenants/<uuid:pk>",
@@ -40,6 +49,13 @@ urlpatterns = [
     path("platform/products/<uuid:product_id>/suspend", PlatformProductSuspendView.as_view(), name="platform-product-suspend"),
     path("platform/products/<uuid:product_id>/unsuspend", PlatformProductUnsuspendView.as_view(), name="platform-product-unsuspend"),
     path("platform/products/<uuid:product_id>/correct", PlatformProductCorrectView.as_view(), name="platform-product-correct"),
+    path("platform/ops", PlatformOpsView.as_view(), name="platform-ops"),
+    path("platform/staff", PlatformStaffListView.as_view(), name="platform-staff-list"),
+    path(
+        "platform/staff/<uuid:user_id>/reset-mfa",
+        PlatformStaffResetMFAView.as_view(),
+        name="platform-staff-reset-mfa",
+    ),
     path("platform/industries", PlatformIndustryListView.as_view(), name="platform-industry-list"),
     path("platform/industries/<uuid:pk>", PlatformIndustryDetailView.as_view(), name="platform-industry-detail"),
     path("platform/categories", PlatformCategoryListView.as_view(), name="platform-category-list"),

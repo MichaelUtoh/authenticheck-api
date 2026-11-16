@@ -1,6 +1,11 @@
 from django.db.models import Count, Q
 from django.utils import timezone
-from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
+from drf_spectacular.utils import (
+    OpenApiParameter,
+    extend_schema,
+    extend_schema_view,
+    inline_serializer,
+)
 from drf_spectacular.types import OpenApiTypes
 from rest_framework import serializers as s
 from rest_framework.exceptions import NotFound, ValidationError
@@ -106,6 +111,55 @@ class PlatformTenantDetailView(APIView):
 
         attach_tenant_extras([tenant])
         return Response(PlatformTenantDetailSerializer(tenant).data)
+
+
+@extend_schema(
+    request=inline_serializer(
+        "TenantEvidenceCheckRequest",
+        fields={"checked": s.BooleanField(), "note": s.CharField(required=False, allow_blank=True)},
+    ),
+    responses={200: s.ListField()},
+    tags=["Platform — Tenants"],
+    summary="Tick or untick one item of a tenant's evidence checklist (staff)",
+    description=(
+        "`key` is one of cac_certificate, brand_ownership, nafdac_registrations, signatory, "
+        "support_contact. Returns the full checklist. Audited."
+    ),
+)
+class PlatformTenantEvidenceView(APIView):
+    permission_classes = _STAFF_PERMS
+
+    def put(self, request, pk, key):
+        from apps.tenants.models import TenantEvidenceCheck
+
+        from .evidence import KEYS, evidence_checklist
+
+        if key not in KEYS:
+            raise NotFound("Unknown checklist item.")
+        try:
+            tenant = Tenant.objects.get(pk=pk)
+        except Tenant.DoesNotExist:
+            raise NotFound("Tenant not found.") from None
+        if "checked" not in request.data:
+            raise ValidationError({"checked": ["This field is required."]})
+        checked = request.data["checked"]
+        if isinstance(checked, str):
+            checked = checked.lower() in ("true", "1")
+        note = str(request.data.get("note", "")).strip()
+
+        if checked:
+            TenantEvidenceCheck.objects.update_or_create(
+                tenant=tenant, key=key,
+                defaults={"checked_by": request.user, "checked_at": timezone.now(), "note": note},
+            )
+        else:
+            TenantEvidenceCheck.objects.filter(tenant=tenant, key=key).delete()
+        audit.record(
+            action="tenant.evidence_checked" if checked else "tenant.evidence_unchecked",
+            actor=request.user, tenant=tenant, target=tenant,
+            metadata={"item": key}, reason=note,
+        )
+        return Response(evidence_checklist(tenant))
 
 
 @extend_schema(
@@ -490,3 +544,166 @@ class PlatformCategoryListView(_TaxonomyListCreateView):
                tags=["Platform — Taxonomy"], summary="Update or deactivate a category (staff)")
 class PlatformCategoryDetailView(_TaxonomyDetailView):
     serializer_class, model, audit_prefix = CategorySerializer, Category, "catalogue.category"
+
+
+# ---------------------------------------------------------------------------
+# Operations at a glance
+# ---------------------------------------------------------------------------
+
+
+def _iso_date(value: str):
+    """Parse an optional ISO 8601 date or datetime setting; None when unset or malformed."""
+    from datetime import datetime, time as dtime
+
+    from django.utils.dateparse import parse_date, parse_datetime
+
+    if not value:
+        return None
+    try:
+        parsed = parse_datetime(value)
+        if parsed is None:
+            day = parse_date(value)
+            parsed = datetime.combine(day, dtime.min) if day else None
+    except ValueError:
+        return None
+    if parsed is None:
+        return None
+    return timezone.make_aware(parsed) if timezone.is_naive(parsed) else parsed
+
+
+@extend_schema(
+    responses={200: s.DictField()},
+    tags=["Platform — Operations"],
+    summary="Operations at a glance (staff)",
+    description=(
+        "Verification latency and error rate over the last hour (measured by middleware; `p95_ms` is "
+        "the upper bound of a histogram bucket), failed and queued issuance jobs, scans in the last "
+        "24 hours, and the TLS certificate expiry and last restore test, which are set by the "
+        "deployment (`TLS_CERT_EXPIRES_AT`, `LAST_RESTORE_TEST_AT`) and are null when not set."
+    ),
+)
+class PlatformOpsView(APIView):
+    permission_classes = _STAFF_PERMS
+
+    def get(self, request):
+        from datetime import timedelta
+
+        from django.conf import settings
+
+        from apps.core.metrics import verify_metrics
+        from apps.issuance.models import IssuanceJob
+        from apps.verification.models import ScanEvent
+
+        now = timezone.now()
+        jobs = IssuanceJob.unscoped
+        tls = _iso_date(settings.TLS_CERT_EXPIRES_AT)
+        restore = _iso_date(settings.LAST_RESTORE_TEST_AT)
+        return Response(
+            {
+                "generated_at": now,
+                "verification": {
+                    **verify_metrics(60),
+                    "scans_24h": ScanEvent.objects.filter(
+                        occurred_at__gte=now - timedelta(hours=24)
+                    ).count(),
+                },
+                "issuance": {
+                    "queue_backlog": jobs.filter(
+                        status__in=[IssuanceJob.Status.PENDING, IssuanceJob.Status.PROCESSING]
+                    ).count(),
+                    "failed_jobs": jobs.filter(
+                        status__in=[IssuanceJob.Status.FAILED, IssuanceJob.Status.PARTIAL]
+                    ).count(),
+                },
+                "tls_cert_expires_at": tls,
+                "tls_days_remaining": (tls - now).days if tls else None,
+                "last_restore_test_at": restore,
+                "days_since_restore_test": (now - restore).days if restore else None,
+            }
+        )
+
+
+# ---------------------------------------------------------------------------
+# Staff authenticator reset
+# ---------------------------------------------------------------------------
+
+
+@extend_schema(
+    responses={200: s.ListField()},
+    tags=["Platform — Staff"],
+    summary="List platform staff and whether each has an authenticator (staff)",
+)
+class PlatformStaffListView(APIView):
+    permission_classes = _STAFF_PERMS
+
+    def get(self, request):
+        from django.contrib.auth import get_user_model
+        from django_otp.plugins.otp_totp.models import TOTPDevice
+
+        User = get_user_model()
+        enrolled = set(
+            TOTPDevice.objects.filter(confirmed=True).values_list("user_id", flat=True)
+        )
+        rows = [
+            {
+                "id": str(u.pk),
+                "email": u.email,
+                "full_name": u.full_name,
+                "is_active": u.is_active,
+                "mfa_enabled": u.pk in enrolled,
+                "is_you": u.pk == request.user.pk,
+            }
+            for u in User.objects.filter(is_staff=True).order_by("email")
+        ]
+        return Response(rows)
+
+
+@extend_schema(
+    request=inline_serializer("ResetMfaRequest", fields={"reason": s.CharField()}),
+    responses={200: s.DictField()},
+    tags=["Platform — Staff"],
+    summary="Reset another staff member's authenticator (staff)",
+    description=(
+        "For a colleague who lost their phone. Removes their authenticators and signs them out "
+        "everywhere; at next login they enrol a new one. `reason` is required and audited. You "
+        "cannot reset your own authenticator. If no other staff user is available, an operator "
+        "runs `python manage.py reset_staff_mfa <email>`."
+    ),
+)
+class PlatformStaffResetMFAView(APIView):
+    permission_classes = _STAFF_PERMS
+
+    def post(self, request, user_id):
+        from django.contrib.auth import get_user_model
+        from django_otp.plugins.otp_totp.models import TOTPDevice
+
+        from apps.identity.models import AuthSession
+        from apps.identity.services import session_service
+
+        reason = _required_text(request, "reason")
+        User = get_user_model()
+        try:
+            target = User.objects.get(pk=user_id, is_staff=True)
+        except User.DoesNotExist:
+            raise NotFound("Staff user not found.") from None
+        if target.pk == request.user.pk:
+            raise ApiError(
+                403, "cannot_reset_own_mfa",
+                "Ask another staff member to reset your authenticator.",
+            )
+
+        removed = TOTPDevice.objects.filter(user=target).delete()[0]
+        revoked = session_service.revoke_all_sessions(
+            target, AuthSession.RevocationReason.MFA_RESET
+        )
+        audit.record(
+            action="auth.mfa.reset",
+            actor=request.user,
+            target=target,
+            reason=reason,
+            metadata={"via": "api", "devices_removed": removed, "sessions_revoked": revoked},
+        )
+        return Response(
+            {"id": str(target.pk), "email": target.email, "mfa_enabled": False,
+             "devices_removed": removed, "sessions_revoked": revoked}
+        )

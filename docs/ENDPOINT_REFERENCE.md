@@ -97,7 +97,7 @@ Staff login flow: `POST /auth/login` returns `{ mfa_required: true, challenge_to
 | `GET` | `/tenants/me/support-contact` | 🏢 | Default consumer support contact (`support_email`, `support_phone`, `support_url`) |
 | `PATCH` | `/tenants/me/support-contact` | 👑 | Update the support contact (audited). Shown on `/verify` unless a product overrides it |
 | `GET` | `/tenants/me/release-gates` | 🏢 | Industry release-gate state (cosmetics `live`, pharmaceuticals `locked`) |
-| `POST` | `/tenants/{id}/approve` | 🛡️ | Approve a pending tenant |
+| `POST` | `/tenants/{id}/approve` | 🛡️ | Approve a pending tenant. `409 rc_number_conflict` if the CAC number belongs to another non-rejected tenant; resend with `rc_conflict_resolution` (free text) to approve anyway |
 | `POST` | `/tenants/{id}/reject` | 🛡️ | Reject a pending tenant. Body `{ reason }` is **required**; the applicant sees it as `decision_reason` |
 | `POST` | `/tenants/{id}/request-info` | 🛡️ | Move tenant to `info_requested`. Body `{ reason }` is **required** (what the applicant must provide); shown as `decision_reason`. `approve` and `suspend` take an optional `reason` (audit only) |
 | `POST` | `/tenants/{id}/suspend` | 🛡️ | Suspend an approved tenant |
@@ -200,7 +200,7 @@ Batch `status` is `active`, `recalled` or `expired`. An `active` batch whose `ex
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/catalogue/batches` | 🏢 | List batches across all products (paginated). Filters: `q` (batch number or product name), `status` (repeatable: `active`, `recalled`, `expired`), `product_id`, `ordering` (`-created_at` default, `created_at`, `batch_number`, `-batch_number`, `best_before`, `-best_before`), `page`, `page_size` |
+| `GET` | `/catalogue/batches` | 🏢 | List batches across all products (paginated). Filters: `q` (batch number or product name), `status` (repeatable: `active`, `recalled`, `expired`), `product_id`, `ordering` (`-created_at` default, `created_at`, `batch_number`, `-batch_number`, `best_before`, `-best_before`), `needs_attention` (`true`/`false`), `page`, `page_size`. Every batch carries `attention: []` with `partial_job`, `unreconciled`, `expiring_soon` |
 | `GET` | `/catalogue/batches/{id}` | 🏢 | One batch by id, no `product_id` needed |
 | `GET` | `/catalogue/products/{product_id}/batches` | 🏢 | List batches for a product |
 | `POST` | `/catalogue/products/{product_id}/batches` | ✏️ | Create a batch (`product_id` also required in the body) |
@@ -296,7 +296,11 @@ are not yet approved, or are suspended by staff, return `404 not_found`.
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | `GET` | `/platform/tenants` | 🛡️ | List all tenants (filter by `status`, repeatable: `?status=pending&status=info_requested`; paginated). Rows include `industry`, `rc_number`, `city`, `decision_reason`, `decided_at`, `owner_email`, `owner_name`, `brands: [{ name }]` and `submitted_at` |
-| `GET` | `/platform/tenants/{id}` | 🛡️ | Tenant detail with usage stats |
+| `GET` | `/platform/tenants/{id}` | 🛡️ | Tenant detail with usage stats, `evidence` (checklist) and `rc_duplicates`. List rows also carry `rc_duplicates: [{ id, legal_name, status }]` |
+| `PUT` | `/platform/tenants/{id}/evidence/{key}` | 🛡️ | Tick or untick a checklist item (`cac_certificate`, `brand_ownership`, `nafdac_registrations`, `signatory`, `support_contact`). Body `{ checked, note? }`; returns the checklist. Audited |
+| `GET` | `/platform/ops` | 🛡️ | Operations at a glance: verify requests / errors / error rate / p95 (last hour), scans in 24 h, issuance queue backlog and failed jobs, TLS certificate expiry and last restore test (null until `TLS_CERT_EXPIRES_AT` / `LAST_RESTORE_TEST_AT` are set) |
+| `GET` | `/platform/staff` | 🛡️ | Staff users with `mfa_enabled` and `is_you` |
+| `POST` | `/platform/staff/{id}/reset-mfa` | 🛡️ | Remove a colleague's authenticators and sign them out. Body `{ reason }` required. Not allowed on yourself (`403 cannot_reset_own_mfa`) |
 | `GET` | `/platform/flags` | 🛡️ | Unreviewed risk flags across all tenants |
 | `GET` | `/platform/audit` | 🛡️ | Paginated audit log (filter by `action`, `tenant_id`) |
 | `GET` | `/platform/products` | 🛡️ | Product review queue, paginated, oldest submission first (filter `status`, default `in_review`; `tenant_id`) |

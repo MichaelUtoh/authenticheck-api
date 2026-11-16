@@ -302,3 +302,244 @@ def test_audit_db_trigger_blocks_raw_delete(tenant, owner):
                 cursor.execute(
                     "DELETE FROM audit_auditevent WHERE id = %s", [str(event.pk)]
                 )
+
+
+# ---------------------------------------------------------------------------
+# Duplicate CAC numbers
+# ---------------------------------------------------------------------------
+
+
+def _tenant(name, rc, status=Tenant.Status.PENDING):
+    return Tenant.objects.create(legal_name=name, rc_number=rc, status=status)
+
+
+def test_rows_flag_other_tenants_with_the_same_rc_number(staff_client):
+    a = _tenant("Alpha Ltd", "RC777")
+    b = _tenant("Beta Ltd", "RC777")
+    _tenant("Gamma Ltd", "RC777", Tenant.Status.REJECTED)  # rejected ones are ignored
+    _tenant("Other Ltd", "RC888")
+
+    rows = {r["id"]: r for r in staff_client.get("/api/v1/platform/tenants").data["results"]}
+    assert [d["id"] for d in rows[str(a.pk)]["rc_duplicates"]] == [str(b.pk)]
+    assert rows[str(b.pk)]["rc_duplicates"][0]["legal_name"] == "Alpha Ltd"
+    detail = staff_client.get(f"/api/v1/platform/tenants/{a.pk}").data
+    assert len(detail["rc_duplicates"]) == 1
+
+
+def test_approving_a_duplicate_rc_number_needs_a_resolution(staff_client):
+    a = _tenant("Alpha Ltd", "RC777")
+    _tenant("Beta Ltd", "RC777")
+
+    blocked = staff_client.post(f"/api/v1/tenants/{a.pk}/approve", {})
+    assert blocked.status_code == 409
+    assert blocked.data["error"]["code"] == "rc_number_conflict"
+    assert blocked.data["error"]["details"]["duplicates"][0]["legal_name"] == "Beta Ltd"
+    a.refresh_from_db()
+    assert a.status == Tenant.Status.PENDING
+
+    ok = staff_client.post(
+        f"/api/v1/tenants/{a.pk}/approve", {"rc_conflict_resolution": "Subsidiary of Beta; CAC confirmed"}
+    )
+    assert ok.status_code == 200
+    a.refresh_from_db()
+    assert a.status == Tenant.Status.APPROVED
+    assert a.rc_conflict_resolution.startswith("Subsidiary")
+
+
+def test_approving_without_a_clash_needs_no_resolution(staff_client):
+    a = _tenant("Solo Ltd", "RC999")
+    assert staff_client.post(f"/api/v1/tenants/{a.pk}/approve", {}).status_code == 200
+
+
+def test_registration_does_not_reveal_a_duplicate_but_audits_it(staff, owner):
+    existing = _tenant("Alpha Ltd", "RC555", Tenant.Status.APPROVED)
+    newcomer = User.objects.create_user("new@platform.test", "a-long-test-password")
+    c = APIClient()
+    c.force_authenticate(user=newcomer)
+    response = c.post(
+        "/api/v1/tenants/register",
+        {"legal_name": "Copycat Ltd", "industry": "cosmetics", "rc_number": "RC555", "city": "Lagos"},
+    )
+    assert response.status_code == 201
+    assert "duplicate" not in str(response.data).lower()
+    event = AuditEvent.objects.get(action="tenant.registered", target_id=response.data["id"])
+    assert event.metadata["rc_duplicate_of"] == [str(existing.pk)]
+
+
+# ---------------------------------------------------------------------------
+# Evidence checklist
+# ---------------------------------------------------------------------------
+
+
+def _checklist(staff_client, tenant):
+    detail = staff_client.get(f"/api/v1/platform/tenants/{tenant.pk}").data
+    return {row["key"]: row for row in detail["evidence"]}
+
+
+def test_evidence_is_derived_from_tenant_data(staff_client, tenant, owner):
+    tenant.rc_number = "RC123"
+    tenant.support_email = "help@acme.test"
+    tenant.save()
+    owner.full_name = "Ada Okafor"
+    owner.save()
+
+    items = _checklist(staff_client, tenant)
+    assert set(items) == {
+        "cac_certificate", "brand_ownership", "nafdac_registrations", "signatory", "support_contact",
+    }
+    assert items["cac_certificate"]["status"] == "manufacturer_provided"
+    assert items["signatory"]["status"] == "manufacturer_provided"
+    assert items["support_contact"]["detail"] == "help@acme.test"
+    assert items["brand_ownership"]["status"] == "missing"
+    assert items["nafdac_registrations"]["status"] == "missing"
+
+
+def test_staff_can_check_and_uncheck_an_item(staff_client, tenant, staff):
+    tenant.rc_number = "RC123"
+    tenant.save()
+    url = f"/api/v1/platform/tenants/{tenant.pk}/evidence/cac_certificate"
+
+    response = staff_client.put(url, {"checked": True, "note": "Matches CAC portal"}, format="json")
+    assert response.status_code == 200
+    row = next(r for r in response.data if r["key"] == "cac_certificate")
+    assert row["status"] == "checked"
+    assert row["checked_by"] == staff.email
+    assert row["note"] == "Matches CAC portal"
+    assert AuditEvent.objects.filter(action="tenant.evidence_checked").exists()
+
+    response = staff_client.put(url, {"checked": False}, format="json")
+    row = next(r for r in response.data if r["key"] == "cac_certificate")
+    assert row["status"] == "manufacturer_provided"
+
+
+def test_evidence_rejects_unknown_key_and_missing_flag(staff_client, tenant):
+    base = f"/api/v1/platform/tenants/{tenant.pk}/evidence"
+    assert staff_client.put(f"{base}/nope", {"checked": True}, format="json").status_code == 404
+    assert staff_client.put(f"{base}/signatory", {}, format="json").status_code == 400
+
+
+def test_evidence_requires_staff(owner, tenant):
+    c = APIClient()
+    c.force_authenticate(user=owner)
+    assert c.put(
+        f"/api/v1/platform/tenants/{tenant.pk}/evidence/signatory", {"checked": True}, format="json"
+    ).status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Operations at a glance
+# ---------------------------------------------------------------------------
+
+
+def test_ops_reports_verify_latency_errors_and_queue(staff_client, settings):
+    from django.core.cache import cache
+
+    cache.clear()
+    settings.TLS_CERT_EXPIRES_AT = "2099-01-01"
+    settings.LAST_RESTORE_TEST_AT = ""
+    anon = APIClient()
+    for _ in range(3):
+        anon.get("/api/v1/verify/ABCDEFGHJKMN")  # well-formed, unknown: 404, still measured
+
+    data = staff_client.get("/api/v1/platform/ops").data
+    assert data["verification"]["requests"] == 3
+    assert data["verification"]["errors"] == 0
+    assert data["verification"]["error_rate"] == 0.0
+    assert data["verification"]["p95_ms"] in (50, 100, 200, 300, 500, 1000, 2000, 5000)
+    assert data["verification"]["scans_24h"] >= 0
+    assert data["issuance"] == {"queue_backlog": 0, "failed_jobs": 0}
+    assert data["tls_days_remaining"] > 365
+    assert data["last_restore_test_at"] is None and data["days_since_restore_test"] is None
+
+
+def test_ops_is_empty_but_valid_with_no_traffic(staff_client, settings):
+    from django.core.cache import cache
+
+    cache.clear()
+    settings.TLS_CERT_EXPIRES_AT = "not a date"
+    data = staff_client.get("/api/v1/platform/ops").data
+    assert data["verification"]["requests"] == 0
+    assert data["verification"]["p95_ms"] is None and data["verification"]["error_rate"] is None
+    assert data["tls_cert_expires_at"] is None
+
+
+def test_ops_requires_staff(owner):
+    c = APIClient()
+    c.force_authenticate(user=owner)
+    assert c.get("/api/v1/platform/ops").status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Staff authenticator reset
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def colleague():
+    return User.objects.create_user("colleague@platform.test", "a-long-test-password", is_staff=True)
+
+
+def _enrol(user):
+    from django_otp.plugins.otp_totp.models import TOTPDevice
+
+    return TOTPDevice.objects.create(user=user, name="default", confirmed=True)
+
+
+def test_staff_list_shows_mfa_state(staff_client, staff, colleague):
+    _enrol(colleague)
+    rows = {r["email"]: r for r in staff_client.get("/api/v1/platform/staff").data}
+    assert rows[colleague.email]["mfa_enabled"] is True
+    assert rows[staff.email]["is_you"] is True
+
+
+def test_staff_can_reset_a_colleagues_authenticator(staff_client, colleague):
+    from django_otp.plugins.otp_totp.models import TOTPDevice
+
+    from apps.identity.models import AuthSession
+    from apps.identity.services import session_service
+
+    _enrol(colleague)
+    session, _ = session_service.create_session(colleague, type("R", (), {
+        "headers": {}, "META": {"REMOTE_ADDR": "127.0.0.1"}})())
+
+    response = staff_client.post(
+        f"/api/v1/platform/staff/{colleague.pk}/reset-mfa", {"reason": "Lost phone"}, format="json"
+    )
+    assert response.status_code == 200
+    assert response.data["devices_removed"] == 1 and response.data["sessions_revoked"] == 1
+    assert not TOTPDevice.objects.filter(user=colleague).exists()
+    session.refresh_from_db()
+    assert session.revoked_reason == AuthSession.RevocationReason.MFA_RESET
+    assert AuditEvent.objects.filter(action="auth.mfa.reset", reason="Lost phone").exists()
+
+    # next login asks them to enrol a new authenticator
+    login = APIClient().post(
+        "/api/v1/auth/login", {"email": colleague.email, "password": "a-long-test-password"}
+    )
+    assert login.data["mfa_enrollment_required"] is True
+
+
+def test_staff_cannot_reset_their_own_authenticator(staff_client, staff):
+    response = staff_client.post(
+        f"/api/v1/platform/staff/{staff.pk}/reset-mfa", {"reason": "me"}, format="json"
+    )
+    assert response.status_code == 403
+    assert response.data["error"]["code"] == "cannot_reset_own_mfa"
+
+
+def test_reset_requires_a_reason_and_a_staff_target(staff_client, owner):
+    assert staff_client.post(
+        f"/api/v1/platform/staff/{owner.pk}/reset-mfa", {"reason": "x"}, format="json"
+    ).status_code == 404  # not a staff user
+    assert staff_client.post(
+        f"/api/v1/platform/staff/{owner.pk}/reset-mfa", {}, format="json"
+    ).status_code == 400
+
+
+def test_reset_staff_mfa_management_command(colleague):
+    from django.core.management import call_command
+    from django_otp.plugins.otp_totp.models import TOTPDevice
+
+    _enrol(colleague)
+    call_command("reset_staff_mfa", colleague.email.upper())
+    assert not TOTPDevice.objects.filter(user=colleague).exists()

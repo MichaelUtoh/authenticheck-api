@@ -12,6 +12,10 @@ class _TenantExtrasMixin(serializers.Serializer):
     owner_name = serializers.SerializerMethodField()
     brands = serializers.SerializerMethodField()
     submitted_at = serializers.DateTimeField(source="created_at", read_only=True)
+    rc_duplicates = serializers.SerializerMethodField()
+
+    def get_rc_duplicates(self, obj):
+        return getattr(obj, "_rc_duplicates", [])
 
     def get_owner_email(self, obj):
         return getattr(obj, "_owner_email", "")
@@ -30,7 +34,8 @@ class PlatformTenantSerializer(_TenantExtrasMixin, serializers.ModelSerializer):
         model = Tenant
         fields = [
             "id", "legal_name", "trading_name", "industry", "rc_number", "city", "status",
-            "decision_reason", "decided_at", "owner_email", "owner_name", "brands", "member_count", "submitted_at", "created_at",
+            "decision_reason", "decided_at", "owner_email", "owner_name", "brands", "rc_duplicates", "member_count", "submitted_at",
+            "created_at",
         ]
         read_only_fields = fields
 
@@ -39,20 +44,26 @@ class PlatformTenantDetailSerializer(_TenantExtrasMixin, serializers.ModelSerial
     member_count = serializers.IntegerField(read_only=True)
     active_codes = serializers.IntegerField(read_only=True)
     open_flags = serializers.IntegerField(read_only=True)
+    evidence = serializers.SerializerMethodField()
+
+    def get_evidence(self, obj):
+        from .evidence import evidence_checklist
+
+        return evidence_checklist(obj)
 
     class Meta:
         model = Tenant
         fields = [
             "id", "legal_name", "trading_name", "industry", "rc_number", "city", "status",
             "decision_reason", "decided_at", "owner_email", "owner_name", "brands",
-            "member_count", "active_codes",
-            "open_flags", "submitted_at", "created_at",
+            "rc_duplicates", "rc_conflict_resolution", "evidence", "member_count",
+            "active_codes", "open_flags", "submitted_at", "created_at",
         ]
         read_only_fields = fields
 
 
 def attach_tenant_extras(tenants) -> None:
-    """Set _owner_email, _owner_name and _brands on each tenant, in two queries.
+    """Set _owner_email, _owner_name, _brands and _rc_duplicates on each tenant, in a few queries.
 
     The owner is the earliest active member with the owner role; brands are the active ones."""
     from apps.catalogue.models import Brand
@@ -77,7 +88,18 @@ def attach_tenant_extras(tenants) -> None:
     ):
         brands.setdefault(tenant_id, []).append({"name": name})
 
+    numbers = {t.rc_number for t in tenants if t.rc_number}
+    by_number: dict = {}
+    if numbers:
+        for other in Tenant.objects.filter(rc_number__in=numbers).exclude(status=Tenant.Status.REJECTED):
+            by_number.setdefault(other.rc_number, []).append(other)
+
     for t in tenants:
+        t._rc_duplicates = [
+            {"id": str(o.pk), "legal_name": o.legal_name, "status": o.status}
+            for o in by_number.get(t.rc_number, [])
+            if o.pk != t.pk
+        ]
         owner = owners.get(t.pk)
         t._owner_email = owner.email if owner else ""
         t._owner_name = owner.full_name if owner else ""

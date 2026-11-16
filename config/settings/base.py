@@ -46,6 +46,7 @@ MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "apps.core.middleware.RequestIDMiddleware",
+    "apps.core.metrics.VerifyMetricsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -280,6 +281,10 @@ AFRICASTALKING_API_KEY = env("AFRICASTALKING_API_KEY", default="")
 RISK_REPEATED_SCAN_THRESHOLD = env.int("RISK_REPEATED_SCAN_THRESHOLD", default=10)
 
 # --- Logging --------------------------------------------------------------------------------
+# Shown on the platform ops panel; set by whoever runs the deployment (ISO 8601, optional).
+TLS_CERT_EXPIRES_AT = env("TLS_CERT_EXPIRES_AT", default="")
+LAST_RESTORE_TEST_AT = env("LAST_RESTORE_TEST_AT", default="")
+
 LOG_FORMAT = env("LOG_FORMAT", default="json")  # "json" or "console"
 LOGGING = {
     "version": 1,

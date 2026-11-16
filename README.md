@@ -184,6 +184,8 @@ celery -A config worker -l info          # in a second terminal, needed for code
 | <http://localhost:8000/api/v1/health/ready> | Readiness check (database and Redis) |
 | <http://localhost:8000/admin/> | Django admin, for platform staff only |
 
+**Lost authenticator.** Another staff user resets it with `POST /api/v1/platform/staff/{id}/reset-mfa`. If no other staff user can, run `docker compose exec api python manage.py reset_staff_mfa <email>`.
+
 In development, emails (for example invitations) are printed to the `api` container logs:
 `docker compose logs -f api`.
 

@@ -392,3 +392,109 @@ def test_brand_from_other_tenant_not_visible(client, owner):
     assert response.status_code == 200
     slugs = [b["slug"] for b in response.data]
     assert "otherbrand" not in slugs
+
+
+# ---------------------------------------------------------------------------
+# Batch attention markers and the needs_attention filter
+# ---------------------------------------------------------------------------
+
+
+def _batch_with_job(tenant, product, owner, number, *, requested, issued, status, expires=None):
+    """A batch with one issuance job and ``issued`` codes."""
+    from apps.issuance.models import Code, IssuanceJob
+
+    with tenant_context(tenant.pk):
+        b = Batch.objects.create(
+            tenant=tenant, product=product, batch_number=number, quantity=requested,
+            expires_at=expires,
+        )
+        job = IssuanceJob.objects.create(
+            tenant=tenant, batch=b, quantity_requested=requested, quantity_issued=issued,
+            submitted_by=owner, status=status,
+        )
+        for i in range(issued):
+            Code.objects.create(
+                tenant=tenant, code=f"{number[:6].upper()}{i:06d}", batch=b, product=product,
+                issuance_job=job,
+            )
+    return b
+
+
+def _attention(client, product, batch):
+    row = client.get(f"/api/v1/catalogue/products/{product.pk}/batches/{batch.pk}").data
+    return row["attention"]
+
+
+def test_attention_empty_for_a_clean_batch(client, tenant, product, owner):
+    from apps.issuance.models import IssuanceJob
+
+    b = _batch_with_job(tenant, product, owner, "CLEAN1", requested=3, issued=3,
+                        status=IssuanceJob.Status.DONE)
+    assert _attention(client, product, b) == []
+
+
+def test_attention_partial_job_and_unreconciled(client, tenant, product, owner):
+    from apps.issuance.models import IssuanceJob
+
+    b = _batch_with_job(tenant, product, owner, "PART01", requested=5, issued=2,
+                        status=IssuanceJob.Status.PARTIAL)
+    assert _attention(client, product, b) == ["partial_job", "unreconciled"]
+
+
+def test_attention_running_job_is_not_unreconciled(client, tenant, product, owner):
+    from apps.issuance.models import IssuanceJob
+
+    b = _batch_with_job(tenant, product, owner, "RUN001", requested=5, issued=2,
+                        status=IssuanceJob.Status.PROCESSING)
+    assert _attention(client, product, b) == []
+
+
+def test_attention_expiring_soon(client, tenant, product, owner):
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from apps.issuance.models import IssuanceJob
+
+    soon = timezone.localdate() + timedelta(days=30)
+    later = timezone.localdate() + timedelta(days=90)
+    a = _batch_with_job(tenant, product, owner, "SOON01", requested=1, issued=1,
+                        status=IssuanceJob.Status.DONE, expires=soon)
+    b = _batch_with_job(tenant, product, owner, "LATE01", requested=1, issued=1,
+                        status=IssuanceJob.Status.DONE, expires=later)
+    assert _attention(client, product, a) == ["expiring_soon"]
+    assert _attention(client, product, b) == []
+
+
+def test_needs_attention_filter_agrees_with_markers(client, tenant, product, owner):
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from apps.issuance.models import IssuanceJob
+
+    soon = timezone.localdate() + timedelta(days=10)
+    _batch_with_job(tenant, product, owner, "OKAY01", requested=2, issued=2,
+                    status=IssuanceJob.Status.DONE)
+    _batch_with_job(tenant, product, owner, "PART02", requested=4, issued=1,
+                    status=IssuanceJob.Status.PARTIAL)
+    _batch_with_job(tenant, product, owner, "EXPR02", requested=1, issued=1,
+                    status=IssuanceJob.Status.DONE, expires=soon)
+    _batch_with_job(tenant, product, owner, "RUN002", requested=9, issued=0,
+                    status=IssuanceJob.Status.PROCESSING)
+    # a failed job that produced no codes at all still needs attention
+    _batch_with_job(tenant, product, owner, "FAIL01", requested=3, issued=0,
+                    status=IssuanceJob.Status.FAILED)
+
+    rows = client.get("/api/v1/catalogue/batches").data["results"]
+    expected = {r["batch_number"] for r in rows if r["attention"]}
+    assert expected == {"PART02", "EXPR02", "FAIL01"}
+
+    flagged = client.get("/api/v1/catalogue/batches?needs_attention=true").data["results"]
+    assert {r["batch_number"] for r in flagged} == expected
+    clean = client.get("/api/v1/catalogue/batches?needs_attention=false").data["results"]
+    assert {r["batch_number"] for r in clean} == {"OKAY01", "RUN002"}
+
+
+def test_needs_attention_rejects_bad_value(client):
+    assert client.get("/api/v1/catalogue/batches?needs_attention=maybe").status_code == 400

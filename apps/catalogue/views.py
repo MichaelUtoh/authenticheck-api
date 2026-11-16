@@ -8,7 +8,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.db import IntegrityError, transaction
-from django.db.models import Count, Q
+from django.db.models import Count, F, Q
 from django.utils import timezone
 from django.utils.text import slugify
 from drf_spectacular.utils import extend_schema, extend_schema_view, inline_serializer, OpenApiParameter
@@ -26,8 +26,13 @@ from apps.audit.models import AuditEvent
 from apps.core.exceptions import ApiError
 from apps.core.pagination import StandardPagination
 from apps.core.tenancy import tenant_context
-from apps.issuance.models import Code
-from apps.issuance.summary import issuance_counts
+from apps.issuance.models import Code, IssuanceJob
+from apps.issuance.summary import (
+    EXPIRING_SOON_DAYS,
+    attention_markers,
+    issuance_counts,
+    job_states,
+)
 from apps.tenants.permissions import (
     CanEditCatalogue,
     CanSubmitProducts,
@@ -805,6 +810,40 @@ def _require_unique_batch_number(tenant_id, product, batch_number, exclude_pk=No
         )
 
 
+def _needs_attention_ids(qs) -> list:
+    """Ids of batches in ``qs`` with at least one attention marker (same rules as
+    ``attention_markers``, evaluated in the database so the list can be paginated)."""
+    from datetime import timedelta
+
+    from django.db.models import Exists, OuterRef, Subquery, Sum
+
+    today = timezone.localdate()
+    jobs = IssuanceJob.unscoped.filter(batch=OuterRef("pk"))
+    open_job = Exists(
+        jobs.filter(status__in=[IssuanceJob.Status.PENDING, IssuanceJob.Status.PROCESSING])
+    )
+    latest_status = Subquery(jobs.order_by("-created_at").values("status")[:1])
+    requested = Subquery(
+        jobs.values("batch").annotate(total=Sum("quantity_requested")).values("total")[:1]
+    )
+    generated = Subquery(
+        Code.unscoped.filter(batch=OuterRef("pk")).values("batch").annotate(n=Count("id")).values("n")[:1]
+    )
+    annotated = qs.annotate(
+        _latest=latest_status, _open=open_job, _requested=requested, _generated=generated
+    )
+    partial = Q(_latest=IssuanceJob.Status.PARTIAL)
+    unreconciled = Q(_requested__gt=0, _open=False) & ~Q(_generated=F("_requested"))
+    # no codes at all: _generated is NULL, which differs from a positive requested count
+    unreconciled |= Q(_requested__gt=0, _open=False, _generated__isnull=True)
+    expiring = Q(
+        status=Batch.Status.ACTIVE,
+        expires_at__gte=today,
+        expires_at__lte=today + timedelta(days=EXPIRING_SOON_DAYS),
+    )
+    return list(annotated.filter(partial | unreconciled | expiring).values_list("pk", flat=True))
+
+
 _BATCH_ORDERINGS = {
     "-created_at": "-created_at",
     "created_at": "created_at",
@@ -826,6 +865,10 @@ _BATCH_ORDERINGS = {
             description="Filter by status (repeatable). `expired` includes active batches past best-before",
         ),
         OpenApiParameter("product_id", OpenApiTypes.UUID, description="Only this product's batches"),
+        OpenApiParameter(
+            "needs_attention", OpenApiTypes.BOOL,
+            description="true: only batches with an attention marker; false: only those without",
+        ),
         OpenApiParameter(
             "ordering", OpenApiTypes.STR,
             description="-created_at (default) | created_at | batch_number | -batch_number | best_before | -best_before",
@@ -868,6 +911,13 @@ class BatchGlobalListView(APIView):
                     Q(status=Batch.Status.ACTIVE) & past_best_before
                 )
             qs = qs.filter(cond)
+
+        attention = request.query_params.get("needs_attention")
+        if attention is not None:
+            if attention.lower() not in ("true", "false", "1", "0"):
+                raise ValidationError({"needs_attention": ["Use true or false."]})
+            flagged = _needs_attention_ids(qs)
+            qs = qs.filter(pk__in=flagged) if attention.lower() in ("true", "1") else qs.exclude(pk__in=flagged)
 
         ordering = request.query_params.get("ordering", "-created_at")
         if ordering not in _BATCH_ORDERINGS:
@@ -1065,9 +1115,14 @@ def _get_product(tenant_id, product_id):
 def _attach_issuance(batches) -> None:
     """Attach per-batch issuance counts (one grouped query for the whole list)."""
     batches = list(batches)
-    counts = issuance_counts(b.pk for b in batches)
+    ids = [b.pk for b in batches]
+    counts = issuance_counts(ids)
+    states = job_states(ids)
+    today = timezone.localdate()
     for batch in batches:
         batch._issuance = counts[batch.pk]
+        latest, has_open = states[batch.pk]
+        batch._attention = attention_markers(batch, counts[batch.pk], latest, has_open, today)
 
 
 def _get_batch(tenant_id, product_id, batch_id):

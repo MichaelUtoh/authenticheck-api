@@ -344,13 +344,14 @@ class BatchSerializer(serializers.ModelSerializer):
     manufacture_date = serializers.DateField(source="manufactured_at", read_only=True)
     expiry = serializers.DateField(source="expires_at", read_only=True)
     issuance = serializers.SerializerMethodField()
+    attention = serializers.SerializerMethodField()
 
     class Meta:
         model = Batch
         fields = [
             "id", "product_id", "product_name", "batch_number", "manufactured_at",
             "manufacture_date", "expires_at", "expiry", "quantity", "declared_quantity",
-            "pack_format", "status", "issuance", "notes", "created_at", "updated_at",
+            "pack_format", "status", "issuance", "attention", "notes", "created_at", "updated_at",
         ]
         read_only_fields = fields
 
@@ -358,6 +359,11 @@ class BatchSerializer(serializers.ModelSerializer):
     def get_issuance(self, obj):
         # Set by the view (one grouped query for a whole page); None when not computed.
         return getattr(obj, "_issuance", None)
+
+    @extend_schema_field(serializers.ListField(child=serializers.CharField()))
+    def get_attention(self, obj):
+        # partial_job | unreconciled | expiring_soon; None when not computed.
+        return getattr(obj, "_attention", None)
 
 
 class BatchWriteSerializer(serializers.ModelSerializer):

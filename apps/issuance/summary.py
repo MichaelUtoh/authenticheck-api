@@ -55,3 +55,52 @@ def issuance_counts(batch_ids) -> dict:
         counts[row["batch_id"]]["generated"] = row["generated"]
         counts[row["batch_id"]]["deactivated"] = row["deactivated"]
     return counts
+
+
+EXPIRING_SOON_DAYS = 60  # matches the dashboard's "expire within 60 days"
+
+
+def job_states(batch_ids) -> dict:
+    """{batch_id: (latest_job_status | None, has_open_job)} in one query."""
+    ids = list(batch_ids)
+    states = {pk: (None, False) for pk in ids}
+    if not ids:
+        return states
+    seen = set()
+    for batch_id, status in (
+        IssuanceJob.unscoped.filter(batch_id__in=ids)
+        .order_by("batch_id", "-created_at")
+        .values_list("batch_id", "status")
+    ):
+        latest, open_job = states[batch_id]
+        if batch_id not in seen:  # first row per batch is its latest job
+            seen.add(batch_id)
+            latest = status
+        if status in (IssuanceJob.Status.PENDING, IssuanceJob.Status.PROCESSING):
+            open_job = True
+        states[batch_id] = (latest, open_job)
+    return states
+
+
+def attention_markers(batch, counts: dict, latest_status, has_open_job, today) -> list[str]:
+    """Server-computed "needs attention" markers for one batch.
+
+    partial_job    the latest issuance job stopped partway (resumable)
+    unreconciled   jobs have finished running but codes generated != codes requested
+    expiring_soon  an active batch whose best-before date is within 60 days
+    (approval_pending is not produced yet: there is no deactivation-approval step.)
+    """
+    from datetime import timedelta
+
+    markers = []
+    if latest_status == IssuanceJob.Status.PARTIAL:
+        markers.append("partial_job")
+    if counts["requested"] and not has_open_job and counts["generated"] != counts["requested"]:
+        markers.append("unreconciled")
+    if (
+        batch.status == "active"
+        and batch.expires_at
+        and today <= batch.expires_at <= today + timedelta(days=EXPIRING_SOON_DAYS)
+    ):
+        markers.append("expiring_soon")
+    return markers

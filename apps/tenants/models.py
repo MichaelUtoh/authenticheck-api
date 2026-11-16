@@ -26,6 +26,9 @@ class Tenant(BaseModel):
     industry = models.CharField(max_length=40, blank=True, db_index=True)  # Industry.key
     rc_number = models.CharField(max_length=32, blank=True)  # CAC registration number
     city = models.CharField(max_length=120, blank=True)
+    # Written by the reviewer when approving a tenant whose rc_number is also registered to
+    # another (non-rejected) tenant. Empty when there was no clash.
+    rc_conflict_resolution = models.TextField(blank=True)
     # Latest platform decision that needs the applicant's attention (rejected / info requested).
     # Shown to the tenant; cleared when the tenant is approved or suspended.
     decision_reason = models.TextField(blank=True)
@@ -37,6 +40,26 @@ class Tenant(BaseModel):
 
     def __str__(self):
         return self.trading_name or self.legal_name
+
+
+class TenantEvidenceCheck(BaseModel):
+    """A platform reviewer's tick against one item of a tenant's evidence checklist.
+
+    Whether the manufacturer *provided* an item is derived from their data (see
+    ``apps.platform.evidence``); this row only records that staff have *checked* it."""
+
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="evidence_checks")
+    key = models.CharField(max_length=40)
+    checked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    checked_at = models.DateTimeField()
+    note = models.TextField(blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["tenant", "key"], name="uniq_evidence_tenant_key")
+        ]
 
 
 # Role names used before the persona-based roles; still accepted by the API and mapped on input.
