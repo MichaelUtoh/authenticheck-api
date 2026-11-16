@@ -31,10 +31,7 @@ def staff():
 @pytest.fixture
 def staff_client(staff):
     c = APIClient()
-    c.force_authenticate(user=staff)
-    session = c.session
-    session["_mfa_verified"] = True
-    session.save()
+    c.force_authenticate(user=staff, token={"amr": ["pwd", "otp"]})
     return c
 
 

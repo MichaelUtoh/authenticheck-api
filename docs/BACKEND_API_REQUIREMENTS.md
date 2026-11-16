@@ -3,8 +3,76 @@
 One living list of everything the frontend needs from the backend that `ENDPOINT_REFERENCE.md` does not yet give it, grouped by area. It is meant to be **kept and edited**, not rewritten each time.
 
 - Last reviewed against `ENDPOINT_REFERENCE.md`: **2026-10-30**
+- **Frontend: see "staff sign-in with MFA is now available (2026-11-16)" below.**
 - Section 6 (public verification) updated **2026-11-05** after reading the backend source (`apps/issuance/tasks.py`, `apps/verification/views.py`): see 6.1 and 6.2.
 - Frontend state at that date: **Products tab built** against the endpoints below. Batches & codes and Investigations are still on sample data; their detailed specs stay in their own docs and are indexed in [section 5](#5-batches--codes) and [section 8](#8-investigations).
+
+---
+
+## Frontend: staff sign-in with MFA is now available (2026-11-16)
+
+**Action needed on the frontend: build the staff sign-in screens (QR code and 6-digit code).** Until now a platform staff user could not finish logging in through the API, so the product review queue could not be used. The backend is done and tested; only the screens are missing. Reference: `ENDPOINT_REFERENCE.md`, Auth section.
+
+### Flow
+
+```
+POST /auth/login { email, password }
+  └─ staff user ─▶ 200 { mfa_required: true, challenge_token, mfa_enrollment_required? }
+
+  mfa_enrollment_required: true  (first time, no authenticator yet)
+    POST /auth/mfa/enroll          { challenge_token }          ─▶ 201 { provisioning_uri, secret }
+    show QR code (+ secret for manual entry), user adds it to Google Authenticator / Authy / 1Password
+    POST /auth/mfa/enroll/confirm  { challenge_token, token }   ─▶ 200 login response
+
+  otherwise (authenticator already set up)
+    POST /auth/mfa/verify          { challenge_token, token }   ─▶ 200 login response
+```
+
+- **Login response** is the same as a normal login: `{ access_token, token_type, user }` plus the HttpOnly refresh cookie. The access token's `amr` is `["pwd","otp"]`. Treat it exactly like the normal login result (keep the token in memory, send it as `Authorization: Bearer`).
+- `token` is exactly **6 digits, sent as a string** (keep leading zeros, so never parse it to a number).
+- Non-staff users are unaffected: their login returns the access token directly, with no `mfa_required`.
+
+### Screens to build
+
+1. **Login**: after `POST /auth/login`, if `mfa_required` is true, keep `challenge_token` **in memory only** (not localStorage) and go to step 2 or 3. Do not call anything else with it.
+2. **Set up authenticator** (when `mfa_enrollment_required` is true):
+   - Call `/auth/mfa/enroll` on arrival and render `provisioning_uri` as a **QR code** (client-side, e.g. the `qrcode` or `qrcode.react` package; never send the URI to a third-party QR service, it contains the secret).
+   - Under the QR code show `secret` as a "Can't scan? Enter this key" fallback, grouped in fours.
+   - A 6-digit input and a "Confirm" button calling `/auth/mfa/enroll/confirm`.
+   - Calling `/auth/mfa/enroll` again returns a **new** secret and invalidates the previous one, so call it once per visit and not on every re-render (React strict mode double-calls in development will show a different QR than the one that is scanned).
+3. **Enter code** (returning staff): one 6-digit input (`inputMode="numeric"`, `autocomplete="one-time-code"`), calling `/auth/mfa/verify`. Submit automatically on the sixth digit if you like.
+4. After success, route to the staff area (product review queue, below).
+
+### Errors to handle
+
+| Status | `error.code` | Meaning | What to show |
+|---|---|---|---|
+| 401 | `invalid_mfa_code` | Wrong or expired code (the challenge is still usable) | "That code did not work. Use the latest code from your app." Keep the input, clear it, allow retry. |
+| 401 | `challenge_invalid` | Challenge expired (5 minutes), already used, or burned after **5 wrong codes** | "This sign-in step expired." Send the user back to the login form. |
+| 409 | `enrollment_not_started` | `enroll/confirm` called before `enroll` | Call `/auth/mfa/enroll` first. |
+| 400 | `validation_error` | `token` is not 6 digits | Inline field error. |
+| 429 | `throttled` | Too many attempts (10 per 15 minutes per IP) | "Too many attempts, try again in a few minutes" using `Retry-After`. |
+
+Also: the login endpoint itself is rate limited (5 attempts per 15 minutes per email and IP), so repeated test logins can return `429` for a while.
+
+### After sign-in
+
+- **Refresh keeps MFA.** `POST /auth/refresh` returns a token that still has `otp` in `amr`; no second code is needed until the session ends. If the session ends (`401`), the user goes through login and the code again.
+- **Staff routes** all require the `otp` claim. A staff token without it gets `403` on `/platform/*`; if you see that, send the user to login.
+- **Product review queue** (this is what the Product Owner needs to test):
+  - `GET /platform/products` lists products waiting for review (`?status=in_review` is the default; `?tenant_id=` filters). Each row has `tenant_id` and `tenant_name`.
+  - `POST /platform/products/{id}/approve` (409 `gtin_conflict` needs a `gtin_conflict_resolution` text and a retry)
+  - `POST /platform/products/{id}/request-changes` and `POST /platform/products/{id}/reject`, both with a required `review_note`.
+  - Approving a product only makes it visible to consumers. It does not unlock pharma, batch approval or code issuance.
+- A user's `is_staff` flag is set by an existing staff user or by `createsuperuser`; there is no self-service route to become staff.
+
+### Suggested order of work
+
+1. Login: branch on `mfa_required` and `mfa_enrollment_required`.
+2. Enrolment screen with the QR code and the confirm step (test with a real authenticator app).
+3. Verify screen for returning staff, plus the error states above.
+4. Staff area shell with the product review queue and the approve / request changes / reject actions.
+5. Optional later: a "reset my authenticator" flow. There is no endpoint for it yet; today a lost device needs a backend change. Tell us when you want it.
 
 ---
 

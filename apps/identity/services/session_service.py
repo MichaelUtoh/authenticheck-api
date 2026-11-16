@@ -36,7 +36,9 @@ def _mk(uid, tid) -> str:
     return _MEMBERSHIP_KEY.format(uid=uid, tid=tid)
 
 
-def create_session(user, request, is_admin: bool = False) -> tuple[AuthSession, str]:
+def create_session(
+    user, request, is_admin: bool = False, amr: list[str] | None = None
+) -> tuple[AuthSession, str]:
     """Create a new AuthSession and return (session, raw_refresh_token)."""
     raw, refresh_hash = issue_refresh_token()
     now = timezone.now()
@@ -50,6 +52,7 @@ def create_session(user, request, is_admin: bool = False) -> tuple[AuthSession, 
 
     session = AuthSession.objects.create(
         user=user,
+        amr=amr or ["pwd"],
         refresh_hash=refresh_hash,
         last_used_at=now,
         idle_expires_at=now + idle_delta,

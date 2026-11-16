@@ -4,6 +4,7 @@ Session-based MFA setup/confirm are kept at their old URLs until Phase 6 replace
 with challenge-token-based equivalents (mfa/enroll, mfa/enroll/confirm, mfa/verify).
 """
 
+import base64
 import logging
 import time
 from datetime import timedelta
@@ -38,6 +39,7 @@ from apps.identity.services import session_service, token_service
 from apps.identity.throttles import (
     LoginEmailIPThrottle,
     LoginIPThrottle,
+    MFAThrottle,
     RefreshThrottle,
     RegisterIPThrottle,
 )
@@ -245,41 +247,52 @@ class LoginView(APIView):
 
         return Response(body)
 
-    def _issue_jwt_response(self, request, user):
-        from apps.tenants.models import Membership
-        from apps.tenants.serializers import MembershipSerializer
+    def _issue_jwt_response(self, request, user, amr=None):
+        return issue_session_response(request, user, amr or ["pwd"])
 
-        session, raw_refresh = session_service.create_session(user, request)
 
-        memberships = list(
-            Membership.objects.filter(user=user, status=Membership.Status.ACTIVE)
-            .select_related("tenant")
-        )
+def issue_session_response(request, user, amr):
+    """Create a session and return the access token + refresh cookie response."""
+    from apps.tenants.models import Membership
+    from apps.tenants.serializers import MembershipSerializer
 
-        tid = mid = None
-        if len(memberships) == 1:
-            m = memberships[0]
-            tid = str(m.tenant_id)
-            mid = str(m.id)
-            session.active_membership = m
-            session.save(update_fields=["active_membership", "updated_at"])
+    session, raw_refresh = session_service.create_session(
+        user, request, is_admin=user.is_staff, amr=amr
+    )
 
-        access_token = token_service.issue_access_token(
-            user, session.id, ["pwd"], time.time(), tid=tid, mid=mid
-        )
-        audit.record(action="auth.login", actor=user, metadata={"method": "password"})
+    memberships = list(
+        Membership.objects.filter(user=user, status=Membership.Status.ACTIVE)
+        .select_related("tenant")
+    )
 
-        body = {
-            "access_token": access_token,
-            "token_type": "bearer",
-            "user": UserSerializer(user).data,
-        }
-        if len(memberships) > 1:
-            body["memberships"] = MembershipSerializer(memberships, many=True).data
+    tid = mid = None
+    if len(memberships) == 1:
+        m = memberships[0]
+        tid = str(m.tenant_id)
+        mid = str(m.id)
+        session.active_membership = m
+        session.save(update_fields=["active_membership", "updated_at"])
 
-        response = Response(body)
-        _set_refresh_cookie(response, raw_refresh, session.absolute_expires_at)
-        return response
+    access_token = token_service.issue_access_token(
+        user, session.id, amr, time.time(), tid=tid, mid=mid
+    )
+    audit.record(
+        action="auth.login",
+        actor=user,
+        metadata={"method": "password+totp" if "otp" in amr else "password"},
+    )
+
+    body = {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": UserSerializer(user).data,
+    }
+    if len(memberships) > 1:
+        body["memberships"] = MembershipSerializer(memberships, many=True).data
+
+    response = Response(body)
+    _set_refresh_cookie(response, raw_refresh, session.absolute_expires_at)
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +417,7 @@ class RefreshView(APIView):
         access_token = token_service.issue_access_token(
             user,
             session.id,
-            ["pwd"],  # amr preserved in Phase 6 when we store it on the session
+            session.amr or ["pwd"],
             time.time(),
             tid=str(membership.tenant_id) if membership else None,
             mid=str(membership.id) if membership else None,
@@ -547,6 +560,199 @@ class MFAConfirmView(APIView):
         device.save(update_fields=["confirmed"])
         audit.record(action="auth.mfa.enabled", actor=request.user)
         return Response({"mfa_enabled": True})
+
+
+# ---------------------------------------------------------------------------
+# MFA for platform staff (challenge-token based): enroll, enroll/confirm, verify
+# ---------------------------------------------------------------------------
+
+MFA_MAX_ATTEMPTS = 5
+
+
+class MFAChallengeSerializer(s.Serializer):
+    challenge_token = s.CharField()
+
+
+class MFAChallengeTokenSerializer(MFAChallengeSerializer):
+    token = s.RegexField(r"^\d{6}$", help_text="6-digit TOTP code.")
+
+
+def _mfa_error(status_code: int, code: str, message: str) -> Response:
+    # Returned (not raised) so that attempt counters written in this request are committed;
+    # raising would roll back the request transaction.
+    from apps.core.context import get_request_id
+
+    return Response(
+        {"error": {"code": code, "message": message, "request_id": get_request_id()}},
+        status=status_code,
+    )
+
+
+_INVALID_CHALLENGE = (401, "challenge_invalid", "This sign-in step has expired. Log in again.")
+
+
+def _load_challenge(raw: str, kind: str):
+    """Return (challenge, None) for a live challenge of ``kind``, else (None, error response)."""
+    import jwt
+
+    try:
+        claims = token_service.decode_challenge_token(raw)
+    except jwt.PyJWTError:
+        return None, _mfa_error(*_INVALID_CHALLENGE)
+
+    challenge = (
+        MFAChallenge.objects.select_for_update()
+        .select_related("user")
+        .filter(token_hash=token_service.hash_token(raw), kind=kind)
+        .first()
+    )
+    if (
+        challenge is None
+        or not challenge.is_valid
+        or challenge.attempts >= MFA_MAX_ATTEMPTS
+        or claims.get("kind") != kind
+        or claims.get("sub") != str(challenge.user_id)
+        or not challenge.user.is_active
+        or not challenge.user.is_staff
+    ):
+        return None, _mfa_error(*_INVALID_CHALLENGE)
+    return challenge, None
+
+
+def _check_code(challenge, device, code: str):
+    """Verify a TOTP code. On failure count the attempt and return an error response."""
+    if device is not None and device.verify_token(code):
+        return None
+    challenge.attempts += 1
+    if challenge.attempts >= MFA_MAX_ATTEMPTS:
+        challenge.used_at = timezone.now()  # burn the challenge: log in again
+        challenge.save(update_fields=["attempts", "used_at", "updated_at"])
+        audit.record(action="auth.mfa.locked", actor=challenge.user)
+        return _mfa_error(*_INVALID_CHALLENGE)
+    challenge.save(update_fields=["attempts", "updated_at"])
+    return _mfa_error(401, "invalid_mfa_code", "That code is not valid. Try the latest code.")
+
+
+@extend_schema(
+    request=MFAChallengeSerializer,
+    responses={
+        201: inline_serializer(
+            "MFAEnrollResponse",
+            fields={"provisioning_uri": s.CharField(), "secret": s.CharField()},
+        )
+    },
+    tags=["Auth"],
+    summary="Start TOTP enrolment for a platform staff login",
+    description=(
+        "Send the `challenge_token` from a login that returned `mfa_enrollment_required`. "
+        "Returns the `otpauth://` URI (render as a QR code) and the base32 `secret` for manual entry. "
+        "Then call `/auth/mfa/enroll/confirm` with the first 6-digit code. Safe to call again to get a "
+        "fresh secret; the challenge stays valid until it expires (5 minutes)."
+    ),
+)
+class MFAEnrollView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    throttle_classes = [MFAThrottle]
+
+    def post(self, request):
+        serializer = MFAChallengeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        challenge, error = _load_challenge(
+            serializer.validated_data["challenge_token"], MFAChallenge.Kind.ENROLL
+        )
+        if error:
+            return error
+
+        user = challenge.user
+        if TOTPDevice.objects.filter(user=user, confirmed=True).exists():
+            return _mfa_error(*_INVALID_CHALLENGE)
+        TOTPDevice.objects.filter(user=user, confirmed=False).delete()
+        device = TOTPDevice.objects.create(user=user, name="default", confirmed=False)
+        secret = base64.b32encode(device.bin_key).decode().rstrip("=")
+        return Response(
+            {"provisioning_uri": device.config_url, "secret": secret},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+@extend_schema(
+    request=MFAChallengeTokenSerializer,
+    responses={200: inline_serializer("MFASessionResponse", fields={"access_token": s.CharField()})},
+    tags=["Auth"],
+    summary="Confirm TOTP enrolment and sign in",
+    description=(
+        "Send the `challenge_token` and the first 6-digit code from the authenticator app. On success the "
+        "device is activated and the response is the same as a normal login (access token plus refresh "
+        "cookie). After 5 wrong codes the challenge is burned and the user must log in again."
+    ),
+)
+class MFAEnrollConfirmView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    throttle_classes = [MFAThrottle]
+
+    def post(self, request):
+        serializer = MFAChallengeTokenSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        challenge, error = _load_challenge(
+            serializer.validated_data["challenge_token"], MFAChallenge.Kind.ENROLL
+        )
+        if error:
+            return error
+
+        user = challenge.user
+        device = TOTPDevice.objects.filter(user=user, confirmed=False).first()
+        if device is None:
+            return _mfa_error(
+                409, "enrollment_not_started", "Start enrolment first (POST /auth/mfa/enroll)."
+            )
+        error = _check_code(challenge, device, serializer.validated_data["token"])
+        if error:
+            return error
+
+        device.confirmed = True
+        device.save(update_fields=["confirmed"])
+        challenge.used_at = timezone.now()
+        challenge.save(update_fields=["used_at", "updated_at"])
+        audit.record(action="auth.mfa.enabled", actor=user)
+        return issue_session_response(request, user, ["pwd", "otp"])
+
+
+@extend_schema(
+    request=MFAChallengeTokenSerializer,
+    responses={200: inline_serializer("MFAVerifySessionResponse", fields={"access_token": s.CharField()})},
+    tags=["Auth"],
+    summary="Complete a platform staff login with a 6-digit code",
+    description=(
+        "Step 2 of staff login: send the `challenge_token` from `/auth/login` (when `mfa_required` is true "
+        "and `mfa_enrollment_required` is not) and the current 6-digit code. Returns the same response as a "
+        "normal login, with `otp` in the token's `amr`. After 5 wrong codes the challenge is burned."
+    ),
+)
+class MFAVerifyView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    throttle_classes = [MFAThrottle]
+
+    def post(self, request):
+        serializer = MFAChallengeTokenSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        challenge, error = _load_challenge(
+            serializer.validated_data["challenge_token"], MFAChallenge.Kind.VERIFY
+        )
+        if error:
+            return error
+
+        user = challenge.user
+        device = TOTPDevice.objects.filter(user=user, confirmed=True).first()
+        error = _check_code(challenge, device, serializer.validated_data["token"])
+        if error:
+            return error
+
+        challenge.used_at = timezone.now()
+        challenge.save(update_fields=["used_at", "updated_at"])
+        return issue_session_response(request, user, ["pwd", "otp"])
 
 
 # ---------------------------------------------------------------------------

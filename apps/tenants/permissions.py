@@ -56,7 +56,9 @@ class IsMFAVerified(BasePermission):
             return False
         if not request.user.is_staff:
             return True
-        return request.session.get("_mfa_verified", False)
+        # JWT login: the access token's `amr` claim lists "otp" once TOTP was completed.
+        auth = request.auth if isinstance(request.auth, dict) else {}
+        return "otp" in auth.get("amr", [])
 
 
 class IsOwnerOrAdmin(BasePermission):

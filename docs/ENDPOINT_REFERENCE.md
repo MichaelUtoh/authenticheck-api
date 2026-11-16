@@ -67,7 +67,11 @@ X-API-Key: ac_<token>
 | `PATCH` | `/auth/me` | 🔑 | Update own profile. Body: `{ "full_name" }` (required, non-blank, max 255). Other fields (email, password) are ignored here. Returns the same payload as `GET /auth/me`. Audited |
 | `POST` | `/auth/mfa/setup` | 🔑 | Begin TOTP enrolment — returns provisioning URI for QR code |
 | `POST` | `/auth/mfa/confirm` | 🔑 | Confirm TOTP device with a 6-digit token |
-| `POST` | `/auth/mfa/verify` | 🌐 | Step 2 of MFA login (called after login returns `mfa_required: true`) |
+| `POST` | `/auth/mfa/enroll` | 🌐 | Staff first login: body `{ challenge_token }` (from login with `mfa_enrollment_required`). Returns `{ provisioning_uri, secret }` for the authenticator app |
+| `POST` | `/auth/mfa/enroll/confirm` | 🌐 | Body `{ challenge_token, token }` (first 6-digit code). Activates the device and returns the login response (`access_token`, `amr: ["pwd","otp"]`, refresh cookie) |
+| `POST` | `/auth/mfa/verify` | 🌐 | Staff later logins: body `{ challenge_token, token }`. Returns the login response. 5 wrong codes burn the challenge (log in again); challenges last 5 minutes and are single use |
+
+Staff login flow: `POST /auth/login` returns `{ mfa_required: true, challenge_token }` (plus `mfa_enrollment_required: true` if no authenticator is set up yet). Then enroll + confirm (first time) or verify (afterwards). The refresh cookie keeps `otp` in the token across refreshes.
 
 ---
 

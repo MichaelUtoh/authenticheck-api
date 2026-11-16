@@ -39,6 +39,12 @@ class LoginEmailIPThrottle(_ExtendedRate, AnonRateThrottle):
         return self.cache_format % {"scope": self.scope, "ident": ident}
 
 
+class MFAThrottle(_ExtendedRate, AnonRateThrottle):
+    """10 per 15 min per IP on the MFA enrol/verify endpoints (attempts are also capped per challenge)."""
+
+    scope = "mfa"
+
+
 class RegisterIPThrottle(_ExtendedRate, AnonRateThrottle):
     """5 per hour per IP."""
 

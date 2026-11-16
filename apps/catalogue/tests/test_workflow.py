@@ -64,10 +64,7 @@ def editor_client(editor, tenant):
 def staff_client():
     staff = User.objects.create_user("staff@workflow.test", "a-long-test-password", is_staff=True)
     c = APIClient()
-    c.force_authenticate(user=staff)
-    session = c.session
-    session["_mfa_verified"] = True
-    session.save()
+    c.force_authenticate(user=staff, token={"amr": ["pwd", "otp"]})
     return c
 
 

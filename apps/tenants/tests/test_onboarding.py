@@ -20,13 +20,10 @@ def staff(db):
 
 @pytest.fixture
 def staff_client(staff):
-    """Staff client with _mfa_verified set — force_authenticate bypasses the login flow so the
-    session flag must be injected manually."""
+    """Staff client with MFA done — force_authenticate bypasses the login flow, so the token claims
+    (amr includes "otp") are injected manually."""
     client = APIClient()
-    client.force_authenticate(user=staff)
-    session = client.session
-    session["_mfa_verified"] = True
-    session.save()
+    client.force_authenticate(user=staff, token={"amr": ["pwd", "otp"]})
     return client
 
 
@@ -93,7 +90,7 @@ def test_non_staff_cannot_approve(user, registered_tenant):
 def test_staff_without_mfa_verified_cannot_approve(staff, registered_tenant):
     client = APIClient()
     client.force_authenticate(user=staff)
-    # No _mfa_verified in session
+    # no "otp" in amr
     response = client.post(f"/api/v1/tenants/{registered_tenant.pk}/approve", {})
     assert response.status_code == 403
 
