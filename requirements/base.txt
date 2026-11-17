@@ -5,7 +5,8 @@ django-environ>=0.11
 django-cors-headers>=4.4
 psycopg[binary]>=3.2
 celery[redis]>=5.4,<5.5
-redis>=5.0
+redis>=5.0,<6
+kombu>=5.3.4,<5.6  # 5.6 needs redis-py>=6.1, but celery 5.4 caps redis<6
 packaging>=24.0  # imported by kombu's Redis transport; not always pulled in transitively
 whitenoise>=6.7
 gunicorn>=22.0
