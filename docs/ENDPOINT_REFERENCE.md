@@ -297,8 +297,8 @@ are not yet approved, or are suspended by staff, return `404 not_found`.
 |---|---|---|---|
 | `GET` | `/platform/tenants` | 🛡️ | List all tenants (filter by `status`, repeatable: `?status=pending&status=info_requested`; paginated). Rows include `industry`, `rc_number`, `city`, `decision_reason`, `decided_at`, `owner_email`, `owner_name`, `brands: [{ name }]` and `submitted_at` |
 | `GET` | `/platform/tenants/{id}` | 🛡️ | Tenant detail with usage stats, `evidence` (checklist) and `rc_duplicates`. List rows also carry `rc_duplicates: [{ id, legal_name, status }]` |
-| `PUT` | `/platform/tenants/{id}/evidence/{key}` | 🛡️ | Tick or untick a checklist item (`cac_certificate`, `brand_ownership`, `nafdac_registrations`, `signatory`, `support_contact`). Body `{ checked, note? }`; returns the checklist. Audited |
-| `GET` | `/platform/ops` | 🛡️ | Operations at a glance: verify requests / errors / error rate / p95 (last hour), scans in 24 h, issuance queue backlog and failed jobs, TLS certificate expiry and last restore test (null until `TLS_CERT_EXPIRES_AT` / `LAST_RESTORE_TEST_AT` are set) |
+| `PUT` | `/platform/tenants/{id}/evidence/{key}` | 🛡️ | Tick or untick a checklist item (`cac_certificate`, `brand_ownership`, `nafdac_registrations`, `signatory`, `support_contact`). Body `{ checked, note? }`; returns the checklist, an array of `{ key, label, checked, status, provided, detail, checked_at, checked_by, note }`. Audited |
+| `GET` | `/platform/ops` | 🛡️ | Operations at a glance: `verify { requests, errors, error_rate (fraction), p95_ms, scans_24h }` (last hour; also under `verification`), top-level `scans_24h`, issuance queue backlog and failed jobs, `tls { expires_at, days_remaining }` and last restore test (null until `TLS_CERT_EXPIRES_AT` / `LAST_RESTORE_TEST_AT` are set) |
 | `GET` | `/platform/staff` | 🛡️ | Staff users with `mfa_enabled` and `is_you` |
 | `POST` | `/platform/staff/{id}/reset-mfa` | 🛡️ | Remove a colleague's authenticators and sign them out. Body `{ reason }` required. Not allowed on yourself (`403 cannot_reset_own_mfa`) |
 | `GET` | `/platform/flags` | 🛡️ | Unreviewed risk flags across all tenants |

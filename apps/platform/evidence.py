@@ -57,6 +57,7 @@ def evidence_checklist(tenant: Tenant) -> list[dict]:
             {
                 "key": key,
                 "label": label,
+                "checked": check is not None,
                 "status": "checked" if check else ("manufacturer_provided" if has_data else "missing"),
                 "provided": has_data,
                 "detail": detail,

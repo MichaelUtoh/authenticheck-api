@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from corsheaders.defaults import default_headers
 import environ
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -161,7 +162,9 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = (
 
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
 CORS_ALLOW_CREDENTIALS = True
-CORS_EXPOSE_HEADERS = ["X-Request-ID", "Idempotent-Replayed"]
+# Custom request headers the frontend sends must be listed or the browser preflight fails.
+CORS_ALLOW_HEADERS = (*default_headers, "idempotency-key")
+CORS_EXPOSE_HEADERS = ["X-Request-ID", "Idempotent-Replayed", "Retry-After"]
 CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=[])
 
 # --- i18n -----------------------------------------------------------------------------------

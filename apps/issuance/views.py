@@ -3,7 +3,7 @@ import logging
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Q, Sum
 from django.http import StreamingHttpResponse
 from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
@@ -109,8 +109,11 @@ class IssuanceJobListCreateView(APIView):
         serializer = IssuanceJobCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        batch = _get_batch(request.active_tenant_id, serializer.validated_data["batch_id"])
+        batch = _get_batch(
+            request.active_tenant_id, serializer.validated_data["batch_id"], lock=True
+        )
         _assert_issuable(batch)
+        _assert_within_declared_quantity(batch, serializer.validated_data["quantity"])
 
         tenant = request.active_membership.tenant
         if tenant.is_pharma:
@@ -315,8 +318,9 @@ class CodeListView(APIView):
 
         q = request.query_params.get("q", "").strip()
         if q:
-            # Codes can contain "-" themselves, so match the text as typed or without dashes.
-            qs = qs.filter(Q(code__icontains=q) | Q(code__icontains=q.replace("-", "")))
+            # Codes are shown as XXXX-XXXX-XXXX, so match the text as typed or without dashes/spaces.
+            plain = q.replace("-", "").replace(" ", "")
+            qs = qs.filter(Q(code__icontains=q) | Q(code__icontains=plain))
 
         paginator = StandardPagination()
         page = paginator.paginate_queryset(qs, request)
@@ -426,9 +430,14 @@ def _get_job(tenant_id, pk):
         raise NotFound("Issuance job not found.") from None
 
 
-def _get_batch(tenant_id, batch_id):
+def _get_batch(tenant_id, batch_id, lock: bool = False):
+    """``lock`` takes a row lock on the batch (held to the end of the request), so two jobs
+    submitted at once cannot both pass the declared-quantity check."""
     try:
-        return Batch.unscoped.select_related("product").get(pk=batch_id, tenant_id=tenant_id)
+        qs = Batch.unscoped.select_related("product")
+        if lock:
+            qs = qs.select_for_update(of=("self",))
+        return qs.get(pk=batch_id, tenant_id=tenant_id)
     except Batch.DoesNotExist:
         raise NotFound("Batch not found.") from None
 
@@ -444,6 +453,41 @@ def _assert_issuable(batch) -> None:
         raise ApiError(
             409, "product_not_approved",
             "Codes can only be issued once the product has been approved.",
+        )
+    if batch.product.public_suspended:
+        raise ApiError(
+            409, "product_suspended",
+            "Codes cannot be issued while the product is suspended by the platform.",
+        )
+    if not batch.product.is_active:
+        raise ApiError(
+            409, "product_archived",
+            "Codes cannot be issued for an archived product.",
+        )
+
+
+def _assert_within_declared_quantity(batch, quantity: int) -> None:
+    """Total codes requested for a batch may not exceed its declared quantity.
+
+    Counts every job's requested quantity except a failed job that produced no codes (nothing
+    to resume). A batch with no declared quantity (0) is not limited. To issue more, raise the
+    batch's declared quantity first (PATCH, audited)."""
+    declared = batch.quantity
+    if not declared:
+        return
+    already = (
+        IssuanceJob.unscoped.filter(batch=batch)
+        .exclude(status=IssuanceJob.Status.FAILED, quantity_issued=0)
+        .aggregate(total=Sum("quantity_requested"))["total"]
+        or 0
+    )
+    if already + quantity > declared:
+        remaining = max(declared - already, 0)
+        raise ApiError(
+            409, "over_issuance",
+            f"This would issue more codes than the declared quantity ({declared}). "
+            f"{remaining} more can be issued; raise the declared quantity first to issue beyond that.",
+            {"declared_quantity": declared, "already_requested": already, "remaining": remaining},
         )
 
 

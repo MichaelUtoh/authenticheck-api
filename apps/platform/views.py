@@ -598,15 +598,14 @@ class PlatformOpsView(APIView):
         jobs = IssuanceJob.unscoped
         tls = _iso_date(settings.TLS_CERT_EXPIRES_AT)
         restore = _iso_date(settings.LAST_RESTORE_TEST_AT)
+        scans_24h = ScanEvent.objects.filter(occurred_at__gte=now - timedelta(hours=24)).count()
+        verify = {**verify_metrics(60), "scans_24h": scans_24h}
         return Response(
             {
                 "generated_at": now,
-                "verification": {
-                    **verify_metrics(60),
-                    "scans_24h": ScanEvent.objects.filter(
-                        occurred_at__gte=now - timedelta(hours=24)
-                    ).count(),
-                },
+                "verify": verify,
+                "verification": verify,  # same data under the older name
+                "scans_24h": scans_24h,
                 "issuance": {
                     "queue_backlog": jobs.filter(
                         status__in=[IssuanceJob.Status.PENDING, IssuanceJob.Status.PROCESSING]
@@ -614,6 +613,10 @@ class PlatformOpsView(APIView):
                     "failed_jobs": jobs.filter(
                         status__in=[IssuanceJob.Status.FAILED, IssuanceJob.Status.PARTIAL]
                     ).count(),
+                },
+                "tls": {
+                    "expires_at": tls,
+                    "days_remaining": (tls - now).days if tls else None,
                 },
                 "tls_cert_expires_at": tls,
                 "tls_days_remaining": (tls - now).days if tls else None,

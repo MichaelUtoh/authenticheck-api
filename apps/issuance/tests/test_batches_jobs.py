@@ -344,6 +344,7 @@ def test_job_list_filters_by_batch_and_status(client, tenant, product, batch, ow
 
 
 def test_failure_mid_run_leaves_partial_job_with_codes_kept(client, batch, flaky_generation):
+    Batch.unscoped.filter(pk=batch.pk).update(quantity=2000)
     resp = issue(client, batch, 1200)
     job = IssuanceJob.unscoped.get(pk=resp.data["id"])
     assert job.status == IssuanceJob.Status.PARTIAL
@@ -365,6 +366,7 @@ def test_failure_before_any_code_is_failed_not_partial(client, batch, monkeypatc
 
 
 def test_resume_generates_only_the_missing_codes(client, batch, flaky_generation, django_capture_on_commit_callbacks):
+    Batch.unscoped.filter(pk=batch.pk).update(quantity=2000)
     job_id = issue(client, batch, 1200).data["id"]
     before = set(Code.unscoped.filter(issuance_job_id=job_id).values_list("code", flat=True))
     assert len(before) == 1000
@@ -496,3 +498,72 @@ def test_product_activity_shows_actor_name(client, product):
     resp = client.get(f"{API}/catalogue/products/{product.pk}/activity")
     assert resp.status_code == 200
     assert resp.data["results"][0]["actor"]["name"] == "Kemi Okoro"
+
+
+# ---------------------------------------------------------------------------
+# Declared-quantity limit, product gates, code search
+# ---------------------------------------------------------------------------
+
+
+def test_cannot_issue_more_than_the_declared_quantity(client, batch):
+    first = issue(client, batch, 600, key="job-key-0001")
+    assert first.status_code == 202
+    second = issue(client, batch, 500, key="job-key-0002")  # 600 + 500 > 1000
+    assert second.status_code == 409
+    error = second.data["error"]
+    assert error["code"] == "over_issuance"
+    assert error["details"] == {"declared_quantity": 1000, "already_requested": 600, "remaining": 400}
+    assert issue(client, batch, 400, key="job-key-0003").status_code == 202  # exactly the rest
+
+
+def test_raising_the_declared_quantity_allows_more(client, batch, product):
+    assert issue(client, batch, 1000, key="job-key-0001").status_code == 202
+    assert issue(client, batch, 1, key="job-key-0002").status_code == 409
+    patched = client.patch(
+        f"{API}/catalogue/products/{product.pk}/batches/{batch.pk}", {"declared_quantity": 1500},
+        format="json",
+    )
+    assert patched.status_code == 200
+    assert issue(client, batch, 500, key="job-key-0003").status_code == 202
+
+
+def test_batch_with_no_declared_quantity_is_not_limited(client, tenant, product):
+    open_batch = make_batch(tenant, product, number="NOLIMIT", quantity=0)
+    assert issue(client, open_batch, 5000).status_code == 202
+
+
+def test_failed_job_with_no_codes_does_not_count_against_the_limit(client, tenant, batch):
+    with tenant_context(tenant.pk):
+        IssuanceJob.objects.create(
+            tenant=tenant, batch=batch, quantity_requested=1000, quantity_issued=0,
+            status=IssuanceJob.Status.FAILED,
+        )
+    assert issue(client, batch, 1000).status_code == 202
+
+
+def test_issuing_blocked_for_a_suspended_product(client, product, batch):
+    Product.unscoped.filter(pk=product.pk).update(public_suspended=True)
+    response = issue(client, batch, 10)
+    assert response.status_code == 409
+    assert response.data["error"]["code"] == "product_suspended"
+
+
+def test_issuing_blocked_for_an_archived_product(client, product, batch):
+    Product.unscoped.filter(pk=product.pk).update(is_active=False)
+    response = issue(client, batch, 10)
+    assert response.status_code == 409
+    assert response.data["error"]["code"] == "product_archived"
+
+
+def test_code_search_ignores_dashes_and_spaces(client, tenant, batch):
+    with tenant_context(tenant.pk):
+        job = IssuanceJob.objects.create(
+            tenant=tenant, batch=batch, quantity_requested=1, quantity_issued=1,
+            status=IssuanceJob.Status.DONE,
+        )
+        Code.objects.create(
+            tenant=tenant, code="7KQ2M9XW4PRT", batch=batch, product=batch.product, issuance_job=job
+        )
+    for typed in ("7KQ2-M9XW-4PRT", "7kq2 m9xw 4prt", "M9XW"):
+        rows = client.get(f"{API}/issuance/codes?q={typed}").data["results"]
+        assert [r["code"] for r in rows] == ["7KQ2M9XW4PRT"], typed

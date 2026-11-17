@@ -543,3 +543,53 @@ def test_reset_staff_mfa_management_command(colleague):
     _enrol(colleague)
     call_command("reset_staff_mfa", colleague.email.upper())
     assert not TOTPDevice.objects.filter(user=colleague).exists()
+
+
+# ---------------------------------------------------------------------------
+# Frontend contract: evidence `checked`, ops aliases, CORS
+# ---------------------------------------------------------------------------
+
+
+def test_evidence_rows_have_a_checked_boolean(staff_client, tenant):
+    tenant.rc_number = "RC1"
+    tenant.save()
+    url = f"/api/v1/platform/tenants/{tenant.pk}/evidence/cac_certificate"
+    before = {r["key"]: r for r in staff_client.get(f"/api/v1/platform/tenants/{tenant.pk}").data["evidence"]}
+    assert all(r["checked"] is False for r in before.values())
+    after = staff_client.put(url, {"checked": True}, format="json").data
+    assert {r["key"]: r["checked"] for r in after}["cac_certificate"] is True
+    assert {r["key"]: r["checked"] for r in after}["signatory"] is False
+
+
+def test_ops_exposes_the_frontend_field_names(staff_client, settings):
+    from django.core.cache import cache
+
+    cache.clear()
+    settings.TLS_CERT_EXPIRES_AT = "2099-01-01"
+    data = staff_client.get("/api/v1/platform/ops").data
+    assert data["verify"] == data["verification"]
+    for key in ("requests", "errors", "error_rate", "p95_ms", "scans_24h"):
+        assert key in data["verify"]
+    assert data["scans_24h"] == data["verify"]["scans_24h"]
+    assert data["tls"]["expires_at"] == data["tls_cert_expires_at"] is not None
+    assert data["tls"]["days_remaining"] == data["tls_days_remaining"] > 365
+
+
+def test_cors_preflight_allows_idempotency_key(settings):
+    settings.CORS_ALLOWED_ORIGINS = ["http://localhost:3000"]
+    response = APIClient().options(
+        "/api/v1/issuance/jobs",
+        HTTP_ORIGIN="http://localhost:3000",
+        HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST",
+        HTTP_ACCESS_CONTROL_REQUEST_HEADERS="authorization,content-type,idempotency-key",
+    )
+    allowed = response["Access-Control-Allow-Headers"].lower()
+    assert "idempotency-key" in allowed
+    assert "authorization" in allowed and "x-requested-with" in allowed  # defaults kept
+
+
+def test_retry_after_is_exposed_to_browsers():
+    from django.conf import settings
+
+    assert "Retry-After" in settings.CORS_EXPOSE_HEADERS
+    assert "Idempotent-Replayed" in settings.CORS_EXPOSE_HEADERS
