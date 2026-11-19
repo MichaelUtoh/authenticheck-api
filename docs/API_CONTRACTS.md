@@ -696,7 +696,7 @@ Bulk-deactivate all active codes for a batch.
 Public endpoint (no authentication). Resolve a product code and record a scan event.
 Throttled per IP. The `result` field is the canonical source of truth.
 
-**Path parameter**: `code` — the 22-character code string from the label.
+**Path parameter**: `code` — the 12-character code from the label. Case, spaces and dashes are ignored (`7kq2-m9xw-4prt` and `7KQ2M9XW4PRT` are the same). Input that cannot be a code returns `400 invalid_code_format` and is not recorded.
 
 **Response `200` — genuine or recalled**
 
@@ -1237,7 +1237,7 @@ Request is validated against the AT API key. Returns a USSD menu/response string
 ```json
 {
   "id":                  "uuid",
-  "code":                "Xk3mN9pQ2rL7sT4v",
+  "code":                "7KQ2M9XW4PRT",
   "batch_id":            "uuid",
   "product_id":          "uuid",
   "status":              "active",
@@ -1250,14 +1250,14 @@ Request is validated against the AT API key. Returns a USSD menu/response string
 
 `status` values: `active` · `deactivated`
 
-`code` is a 22-character URL-safe string with 128 bits of entropy. Globally unique across all tenants.
+`code` is 12 characters, returned canonical (upper-case, no dashes; display as `XXXX-XXXX-XXXX`). Alphabet `23456789ABCDEFGHJKMNPQRSTVWXYZ`; the 12th character is a Luhn mod-30 check. Globally unique across all tenants. Codes converted from the old 22-character format also resolve by their old value (exact match).
 
 ### ConsumerReport object
 
 ```json
 {
   "id":            "uuid",
-  "code_str":      "Xk3mN9pQ2rL7sT4v",
+  "code_str":      "7KQ2M9XW4PRT",
   "description":   "Packaging looked different",
   "contact_email": "consumer@example.com",
   "country_code":  "NGA",

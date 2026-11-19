@@ -343,17 +343,43 @@ Consumer-facing rules that depend on product data. The public page itself is not
 
 ### 6.1 Product code format (blocker)
 
-The public checker (`/`, `/verify/{code}`) is built for **12-character codes**, e.g. `7KQ2-M9XW-4PRT`, typed or scanned by consumers. Today the backend issues **22-character** codes (`secrets.token_urlsafe(16)`: letters in both cases, digits, `-` and `_`; `Code.code` is `max_length=22`) and `GET /verify/{code}` matches them **exactly** (`.get(code=code_str)`), so case, dashes and spaces all change the result. Until this is fixed, every real code fails the frontend's format check, and any code that did reach the API would come back `404` after the frontend upper-cases it.
+**Implemented.** The backend issues **12-character codes** (`7KQ2-M9XW-4PRT` when grouped), generated with `secrets.choice`. Codes are stored and returned **canonical: upper-case, no dashes or spaces** (`7KQ2M9XW4PRT`); the frontend groups them as `XXXX-XXXX-XXXX` for display. Every lookup (verify, reports, deactivate, USSD, GS1) goes through one helper that trims, upper-cases and strips spaces and dashes, so `7kq2-m9xw 4prt` resolves.
+
+**Frontend: update `lib/api/verify.ts` to this exact format.**
+
+| Rule | Value |
+|---|---|
+| Length | 12 characters after removing spaces and dashes |
+| Alphabet (30 symbols) | `23456789ABCDEFGHJKMNPQRSTVWXYZ` (digits 2-9, then letters without `I L O U`). `0`, `1`, `O`, `I`, `L`, `U` are never valid and must **not** be auto-corrected |
+| Check character | The 12th character is a **Luhn mod-30** check over the first 11. Index = position in the alphabet above. From the right, double every other value (starting with 2), add `q + r` of each product divided by 30, and the check is `(30 - sum % 30) % 30` |
+| Check algorithm in code | `_check_char()` in `apps/issuance/codes.py` |
+
+```ts
+const ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ";
+function checkChar(payload: string): string {
+  let sum = 0, factor = 2;
+  for (let i = payload.length - 1; i >= 0; i--) {
+    const add = factor * ALPHABET.indexOf(payload[i]);
+    factor = factor === 2 ? 1 : 2;
+    sum += Math.floor(add / 30) + (add % 30);
+  }
+  return ALPHABET[(30 - (sum % 30)) % 30];
+}
+```
+
+**Errors.** `GET /verify/{code}` returns `400 invalid_code_format` for input that cannot be a code (wrong length, a character outside the alphabet, or a bad check character). It is **not recorded** as a scan. A well-formed code that does not exist returns `404` with `result: "not_found"` and is recorded.
+
+**Existing codes.** Codes issued before the change keep working: they were converted to 12-character codes, and their old 22-character value resolves through `legacy_code` by **exact, case-sensitive match** only (a legacy code that is not found returns `400 invalid_code_format`, since it fails the new format check).
 
 | ID | Requirement | Priority | Status |
 |---|---|---|---|
-| VER-8 | **Issue 12-character codes.** Generate from a secure random source (`secrets.choice`, not a derived or sequential value), unique across all tenants as today. Replace `secrets.token_urlsafe(16)` in `issuance/tasks.py` (both the batch path and the collision-retry path). Collision handling stays. | **Required** | Open |
-| VER-9 | **Alphabet.** Agree the exact character set; the frontend validates against it. Recommendation: 32 unambiguous characters (Crockford Base32, or `A–Z` and `2–9` without `I L O U`), which gives about 2^60 codes at 12 characters. If `0`/`O` and `1`/`I` are both allowed, the frontend must not auto-correct them. **Optional extension:** a check character (ISO 7064 / Luhn-style) as the 12th character, so typos are caught before a lookup is recorded. | Decision | Open |
-| VER-10 | **Normalise before every lookup:** trim, remove spaces and `-`, upper-case. Apply it in `GET /verify/{code}`, `POST /reports` (`code_str`), `POST /issuance/codes/{code}/deactivate`, and the GS1 redirect (VER-13), through one shared helper. Store codes canonically (upper-case, no dashes). The frontend shows and links codes as `XXXX-XXXX-XXXX`, and print exports should use the same grouping. | **Required** | Open |
-| VER-11 | **Schema and existing data.** Migration for `Code.code` (`max_length` 12, or 16 for headroom) and for `code_str` on `ScanEvent` and the risk report model (these hold user input, so keep them long enough for malformed values). **Decision:** what happens to codes already issued at 22 characters: regenerate (fine if only test data), or keep them resolvable through a legacy exact-match fallback. | **Required** | Open |
-| VER-12 | `risk/serializers.py` already upper-cases `code_str` on reports. That was wrong for mixed-case codes and becomes correct once VER-8 lands; make it use the VER-10 helper instead of a bare `.upper()`. | **Required** | Open |
-| VER-13 | **GS1 Digital Link** `GET /01/{gtin}/21/{serial}` redirects to `/verify/{serial}`. Confirm that `serial` is the 12-character code (not a longer GS1 serial) and normalise it the same way. If GS1 serials will be longer, say so now. | Decision | Open |
-| VER-14 | **Malformed input.** Today any string records a `not_found` scan, so typos and bots create noise in analytics and risk rules. Suggested: input that fails the VER-9 format returns `400` with `{ error: { code: "invalid_code_format" } }` and is **not** recorded. The frontend already validates locally, so this protects other clients (USSD, direct links). | Optional | Open |
+| VER-8 | **Issue 12-character codes.** Generate from a secure random source (`secrets.choice`, not a derived or sequential value), unique across all tenants as today. Replace `secrets.token_urlsafe(16)` in `issuance/tasks.py` (both the batch path and the collision-retry path). Collision handling stays. | **Required** | Done |
+| VER-9 | **Alphabet.** Agree the exact character set; the frontend validates against it. Recommendation: 32 unambiguous characters (Crockford Base32, or `A–Z` and `2–9` without `I L O U`), which gives about 2^60 codes at 12 characters. If `0`/`O` and `1`/`I` are both allowed, the frontend must not auto-correct them. **Optional extension:** a check character (ISO 7064 / Luhn-style) as the 12th character, so typos are caught before a lookup is recorded. | Decision | Done (30 symbols + Luhn mod-30 check) |
+| VER-10 | **Normalise before every lookup:** trim, remove spaces and `-`, upper-case. Apply it in `GET /verify/{code}`, `POST /reports` (`code_str`), `POST /issuance/codes/{code}/deactivate`, and the GS1 redirect (VER-13), through one shared helper. Store codes canonically (upper-case, no dashes). The frontend shows and links codes as `XXXX-XXXX-XXXX`, and print exports should use the same grouping. | **Required** | Done |
+| VER-11 | **Schema and existing data.** Migration for `Code.code` (`max_length` 12, or 16 for headroom) and for `code_str` on `ScanEvent` and the risk report model (these hold user input, so keep them long enough for malformed values). **Decision:** what happens to codes already issued at 22 characters: regenerate (fine if only test data), or keep them resolvable through a legacy exact-match fallback. | **Required** | Done (`max_length` 16; `legacy_code` fallback) |
+| VER-12 | `risk/serializers.py` already upper-cases `code_str` on reports. That was wrong for mixed-case codes and becomes correct once VER-8 lands; make it use the VER-10 helper instead of a bare `.upper()`. | **Required** | Done |
+| VER-13 | **GS1 Digital Link** `GET /01/{gtin}/21/{serial}` redirects to `/verify/{serial}`. Confirm that `serial` is the 12-character code (not a longer GS1 serial) and normalise it the same way. If GS1 serials will be longer, say so now. | Decision | Done (`serial` is the 12-character code, normalised the same way) |
+| VER-14 | **Malformed input.** Today any string records a `not_found` scan, so typos and bots create noise in analytics and risk rules. Suggested: input that fails the VER-9 format returns `400` with `{ error: { code: "invalid_code_format" } }` and is **not** recorded. The frontend already validates locally, so this protects other clients (USSD, direct links). | Optional | Done for `GET /verify/{code}` (`400 invalid_code_format`, not recorded) |
 
 ### 6.2 Response contract for the result states
 
@@ -420,7 +446,7 @@ Where the frontend hard-codes a guess. When an item above is confirmed, update t
 4. **Consumer preview for never-approved products** (VER-6).
 5. **Behaviour with several regulatory references** on one product (PRD-10).
 6. **Suspension and batches**: does a suspended product block issuing more codes (BCH-10)?
-7. **Consumer code alphabet**, whether to add a check character, and what happens to existing 22-character codes (VER-9, VER-11, VER-13).
+7. ~~Consumer code alphabet, check character and existing 22-character codes (VER-9, VER-11, VER-13).~~ **Decided and implemented:** 30-symbol alphabet, Luhn mod-30 check character, old codes resolve through `legacy_code`. See section 6.1.
 8. Batches & codes and Investigations decisions: see their own docs (§11 and §10).
 
 ---
