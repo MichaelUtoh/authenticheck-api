@@ -55,10 +55,10 @@ Everything below is **implemented, tested and on `main`**. Run `python manage.py
 | 2 | **Handle `400 invalid_code_format`** from `GET /verify/{code}` (show "That code isn't valid, check and try again"; nothing was recorded). | VER-14 |
 | 3 | **Add the consumer route `/v/[code]`** that runs the check for that code. This is the path the QR codes and the GS1 redirect point to. Tell the backend if the route is named differently and the redirect and docs will follow. | QR payload, 6.1 |
 | 4 | **Build "Scan QR"** with the browser camera. Accept only a URL on the verify domain (`/v/{code}` or `/01/{gtin}/21/{code}`) or a bare 12-character code; anything else is rejected without a lookup. Keep the typed-code input beside it as the fallback. | 6.1 |
-| 5 | **Decide the verify domain** (with the product owner) and give it to the backend as `VERIFY_BASE_URL`. It is printed on labels, so it must not change later. | 6.1 |
+| 5 | **Verify domain: decided for now.** The temporary test domain is `https://authenticheck-web.netlify.app` (`VERIFY_BASE_URL`), so QR payloads are `https://authenticheck-web.netlify.app/v/{code}`. **Do not print real labels on it:** switch to the permanent domain first, because the domain is printed on the label and cannot change afterwards. | 6.1 |
 | 6 | **Batch code exports and print layouts** use the canonical code, grouped `XXXX-XXXX-XXXX`, with the printed code beside every QR. | 6.1 |
 
-**Not built:** the backend does not generate QR images; the label printer or vendor builds the QR from the exported code or URL. Open decision: whether to add a server-side QR or CSV export for batches.
+**Not built:** the backend does not generate QR images; the label printer or vendor builds the QR from the exported code or URL. Decision deferred (2026-11-20): whether to add a server-side QR or CSV export for batches; for now the printer builds the QR.
 
 ### Not built (do not build against these)
 
@@ -412,7 +412,7 @@ function checkChar(payload: string): string {
 **In-app "Scan QR" (frontend).** Read the QR, then accept only (a) a URL on the verify domain whose path is `/v/{code}` or `/01/{gtin}/21/{code}`, or (b) a bare 12-character code. Extract the code, run it through the same `cleanCode()` and `validateCode()` as typed input, and call `GET /verify/{code}`. Any other payload (another domain, another path, free text) is rejected with "This QR code is not an AuthentiCheck code" and is **not** looked up, which stops lookalike or phishing QR codes being opened from inside the app. Scan and manual entry are the same check: both are recorded and rate-limited alike.
 
 **Backend gaps.**
-- ~~`GET /01/{gtin}/21/{serial}` redirected to the JSON endpoint.~~ **Fixed:** it now redirects to `{VERIFY_BASE_URL}/v/{code}` (the consumer page), with the code normalised. `VERIFY_BASE_URL` is a setting that defaults to `FRONTEND_URL`; set it to the final verify domain before labels are printed.
+- ~~`GET /01/{gtin}/21/{serial}` redirected to the JSON endpoint.~~ **Fixed:** it now redirects to `{VERIFY_BASE_URL}/v/{code}` (the consumer page), with the code normalised. `VERIFY_BASE_URL` is a setting that defaults to `FRONTEND_URL`; it is set to the temporary test domain `https://authenticheck-web.netlify.app` for now; change it to the permanent domain before real labels are printed.
 - The backend does not generate QR images. Batch code exports must give the printer the canonical code (and optionally the full URL) so the label vendor builds the QR.
 
 | ID | Requirement | Priority | Status |

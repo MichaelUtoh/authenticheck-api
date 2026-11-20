@@ -144,6 +144,7 @@ Set these in `.env`:
 | `JWT_SIGNING_KEY` | Required. A separate long random string used to sign access tokens. |
 | `DATABASE_URL`, `REDIS_URL` | Connection strings (the Compose file overrides them for containers). |
 | `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS`, `FRONTEND_URL` | The frontend origin, `http://localhost:3000` by default. |
+| `VERIFY_BASE_URL` | Consumer verify domain used by the GS1 redirect and QR codes (`{VERIFY_BASE_URL}/v/{code}`). Defaults to `FRONTEND_URL`. Currently the test domain `https://authenticheck-web.netlify.app`; switch to the permanent domain before labels are printed. |
 
 Generate a key with `python3 -c "import secrets; print(secrets.token_urlsafe(64))"`. Image storage, email delivery and
 other optional settings are documented inline in [.env.example](.env.example).
