@@ -9,6 +9,7 @@ settings.AFRICASTALKING_API_KEY (if configured; skip check if not set).
 """
 
 import logging
+from urllib.parse import quote
 
 from django.conf import settings
 from django.http import HttpResponse
@@ -17,6 +18,8 @@ from django.views import View
 from drf_spectacular.utils import extend_schema
 from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
+
+from apps.issuance.codes import canonical_code
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +31,12 @@ logger = logging.getLogger(__name__)
 
 @extend_schema(
     tags=["Integrations — GS1"],
-    summary="GS1 Digital Link resolver — redirects to /verify/{serial}",
+    summary="GS1 Digital Link resolver — redirects to the consumer verify page",
     description=(
         "Compliant with the GS1 Digital Link standard. "
         "The GTIN (`01`) is accepted but not validated; the serial number (`21`) is "
-        "used as the AuthentiCheck code."
+        "used as the AuthentiCheck code. Redirects to `{VERIFY_BASE_URL}/v/{code}` (the consumer page), "
+        "with the code normalised (upper-case, no spaces or dashes)."
     ),
 )
 class GS1DigitalLinkView(APIView):
@@ -40,7 +44,8 @@ class GS1DigitalLinkView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, gtin, serial):
-        return redirect(f"/api/v1/verify/{serial}", permanent=False)
+        base = settings.VERIFY_BASE_URL.rstrip("/")
+        return redirect(f"{base}/v/{quote(canonical_code(serial), safe='')}", permanent=False)
 
 
 # ---------------------------------------------------------------------------

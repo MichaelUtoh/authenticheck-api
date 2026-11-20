@@ -53,11 +53,12 @@ def code(tenant, owner):
 # ---------------------------------------------------------------------------
 
 
-def test_gs1_link_redirects_to_verify():
+def test_gs1_link_redirects_to_consumer_verify_page(settings):
+    settings.VERIFY_BASE_URL = "https://verify.example.com/"
     client = APIClient()
-    response = client.get("/api/v1/01/05000169058236/21/INTCODE000001")
+    response = client.get("/api/v1/01/05000169058236/21/7kq2-m9xw-4prt")
     assert response.status_code in (301, 302)
-    assert "/api/v1/verify/INTCODE000001" in response["Location"]
+    assert response["Location"] == "https://verify.example.com/v/7KQ2M9XW4PRT"
 
 
 # ---------------------------------------------------------------------------

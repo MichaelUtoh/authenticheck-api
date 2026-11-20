@@ -148,6 +148,9 @@ DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="AuthentiCheck <no-reply@
 
 # Base URL of the frontend; invitation emails link to {FRONTEND_URL}/accept-invite?token=...
 FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:3000")
+# Public consumer verify domain: the GS1 Digital Link resolver redirects to {VERIFY_BASE_URL}/v/{code}.
+# Printed on labels, so it must stay stable; defaults to the frontend.
+VERIFY_BASE_URL = env("VERIFY_BASE_URL", default=FRONTEND_URL)
 RESET_TOKEN_TTL_MINUTES = env.int("RESET_TOKEN_TTL_MINUTES", default=30)
 SUPPORT_GRANT_MAX_HOURS = env.int("SUPPORT_GRANT_MAX_HOURS", default=4)
 MFA_CHALLENGE_MAX_ATTEMPTS = env.int("MFA_CHALLENGE_MAX_ATTEMPTS", default=5)

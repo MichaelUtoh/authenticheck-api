@@ -371,6 +371,23 @@ function checkChar(payload: string): string {
 
 **Existing codes.** Codes issued before the change keep working: they were converted to 12-character codes, and their old 22-character value resolves through `legacy_code` by **exact, case-sensitive match** only (a legacy code that is not found returns `400 invalid_code_format`, since it fails the new format check).
 
+**QR payload (proposed, needs sign-off before labels are printed).** The QR on a pack encodes a **verify URL**, not the bare code, so a phone's native camera opens the check page with no app.
+
+| Rule | Value |
+|---|---|
+| Payload | `https://<verify-domain>/v/7KQ2M9XW4PRT`: the frontend consumer page, canonical code (upper-case, no dashes), no query string, no tracking parameters |
+| Domain | One fixed, owned verify domain, agreed once. Labels are physical and outlive deployments, so the domain must never change; use a redirect on that domain if the frontend moves |
+| Not in the payload | Tenant, batch, product, GTIN, expiry or any other data. The code alone identifies the unit, and anything else would go stale or leak |
+| Printed alongside | The same code as text, grouped `XXXX-XXXX-XXXX`, beside every QR, as the manual-entry fallback |
+| Error correction | Level M or higher; keep the quiet zone of 4 modules; minimum printed size about 15 mm |
+| GS1 variant | Packs that already use GS1 Digital Link may encode `https://<verify-domain>/01/{gtin}/21/{code}` instead. It must resolve to the same check (see below) |
+
+**In-app "Scan QR" (frontend).** Read the QR, then accept only (a) a URL on the verify domain whose path is `/v/{code}` or `/01/{gtin}/21/{code}`, or (b) a bare 12-character code. Extract the code, run it through the same `cleanCode()` and `validateCode()` as typed input, and call `GET /verify/{code}`. Any other payload (another domain, another path, free text) is rejected with "This QR code is not an AuthentiCheck code" and is **not** looked up, which stops lookalike or phishing QR codes being opened from inside the app. Scan and manual entry are the same check: both are recorded and rate-limited alike.
+
+**Backend gaps.**
+- ~~`GET /01/{gtin}/21/{serial}` redirected to the JSON endpoint.~~ **Fixed:** it now redirects to `{VERIFY_BASE_URL}/v/{code}` (the consumer page), with the code normalised. `VERIFY_BASE_URL` is a setting that defaults to `FRONTEND_URL`; set it to the final verify domain before labels are printed.
+- The backend does not generate QR images. Batch code exports must give the printer the canonical code (and optionally the full URL) so the label vendor builds the QR.
+
 | ID | Requirement | Priority | Status |
 |---|---|---|---|
 | VER-8 | **Issue 12-character codes.** Generate from a secure random source (`secrets.choice`, not a derived or sequential value), unique across all tenants as today. Replace `secrets.token_urlsafe(16)` in `issuance/tasks.py` (both the batch path and the collision-retry path). Collision handling stays. | **Required** | Done |
