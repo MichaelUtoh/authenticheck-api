@@ -642,7 +642,10 @@ Download a CSV of all codes for a completed job (streaming).
 Content-Disposition: attachment; filename="codes-<job-id>.csv"
 ```
 
-Columns: `code`, `batch_number`, `product_sku`, `product_name`, `issued_at`
+Columns: `code`, `batch_number`, `product_sku`, `product_name`, `issued_at`, `code_display`, `verify_url`
+
+- `code_display`: the code grouped `XXXX-XXXX-XXXX`; print it beside the QR as the manual-entry fallback.
+- `verify_url`: `{VERIFY_BASE_URL}/v/{code}`, the address to encode in the QR code (the printer builds the QR image from this column).
 
 **Error** `400` if job status is not `done`.
 

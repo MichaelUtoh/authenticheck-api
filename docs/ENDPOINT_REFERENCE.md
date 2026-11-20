@@ -229,7 +229,7 @@ Job `status`: `pending`, `processing`, `partial` (some codes generated, the rest
 | `POST` | `/issuance/jobs` | 👑 | Submit a code-generation job ⚠️ requires `Idempotency-Key` header. `409 batch_not_active` for a recalled or expired batch, `409 product_not_approved` unless the product is approved |
 | `GET` | `/issuance/jobs/{id}` | 🏢 | Get job status and reconciliation |
 | `POST` | `/issuance/jobs/{id}/resume` | 👑 | Generate only the missing codes of a `partial` job (or a `failed` job that has some codes). Never duplicates codes. Returns `202`. While a run is already in progress it returns that job instead of starting a second run. `409 job_not_resumable` otherwise. `Idempotency-Key` optional |
-| `GET` | `/issuance/jobs/{id}/export` | 🏢 | Download codes CSV (only when `status === 'done'`) |
+| `GET` | `/issuance/jobs/{id}/export` | 🏢 | Download codes CSV with `code_display` and `verify_url` columns for the printer's QR (only when `status === 'done'`) |
 
 ---
 

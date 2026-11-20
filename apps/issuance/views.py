@@ -23,7 +23,7 @@ from apps.core.pagination import StandardPagination
 from apps.core.tenancy import get_current_tenant_id
 from apps.tenants.permissions import CanIssueCodes, HasActiveTenantMembership, IsOwnerOrAdmin
 
-from .codes import find_code
+from .codes import display_code, find_code, verify_url
 from .models import Code, IssuanceJob
 from .serializers import (
     CodeSerializer,
@@ -222,7 +222,8 @@ class IssuanceJobResumeView(APIView):
     summary="Download a CSV of all codes for a completed job",
     description=(
         "Streams a CSV file with columns: `code`, `batch_number`, `product_sku`, "
-        "`product_name`, `issued_at`. Only available when `status` is `done`."
+        "`product_name`, `issued_at`, `code_display` (`XXXX-XXXX-XXXX`, print this beside the QR) and "
+        "`verify_url` (the address to encode in the QR). Only available when `status` is `done`."
     ),
 )
 class IssuanceJobExportView(APIView):
@@ -245,7 +246,7 @@ class IssuanceJobExportView(APIView):
 
 
 def _stream_csv(job):
-    header = ["code", "batch_number", "product_sku", "product_name", "issued_at"]
+    header = ["code", "batch_number", "product_sku", "product_name", "issued_at", "code_display", "verify_url"]
     yield _csv_row(header)
     qs = (
         Code.unscoped.filter(issuance_job=job)
@@ -260,6 +261,8 @@ def _stream_csv(job):
             c.product.sku,
             c.product.name,
             c.created_at.isoformat(),
+            display_code(c.code),
+            verify_url(c.code),
         ])
 
 

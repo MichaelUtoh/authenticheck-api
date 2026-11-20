@@ -41,6 +41,7 @@ Everything below is **implemented, tested and on `main`**. Run `python manage.py
 
 | Change | Where |
 |---|---|
+| **Option A for QR labels (2026-11-20):** `GET /issuance/jobs/{id}/export` has two new trailing columns, `code_display` (`XXXX-XXXX-XXXX`) and `verify_url` (`{VERIFY_BASE_URL}/v/{code}`). The printer builds the QR from `verify_url` and prints `code_display` beside it. Existing columns are unchanged. | `apps/issuance/views.py` |
 | New codes are **12 characters** from a 30-symbol alphabet (`23456789ABCDEFGHJKMNPQRSTVWXYZ`) with a Luhn mod-30 check as the 12th character, generated with `secrets.choice`. Stored and returned canonical (upper-case, no dashes). | `apps/issuance/codes.py` |
 | Codes issued before the change were converted; the old 22-character value still resolves through `legacy_code` (exact, case-sensitive match). | migration |
 | One normalising helper (trim, upper-case, strip spaces and dashes) is used by verify, reports, deactivate, USSD and GS1. | VER-10, VER-12 |
@@ -56,9 +57,9 @@ Everything below is **implemented, tested and on `main`**. Run `python manage.py
 | 3 | **Add the consumer route `/v/[code]`** that runs the check for that code. This is the path the QR codes and the GS1 redirect point to. Tell the backend if the route is named differently and the redirect and docs will follow. | QR payload, 6.1 |
 | 4 | **Build "Scan QR"** with the browser camera. Accept only a URL on the verify domain (`/v/{code}` or `/01/{gtin}/21/{code}`) or a bare 12-character code; anything else is rejected without a lookup. Keep the typed-code input beside it as the fallback. | 6.1 |
 | 5 | **Verify domain: decided for now.** The temporary test domain is `https://authenticheck-web.netlify.app` (`VERIFY_BASE_URL`), so QR payloads are `https://authenticheck-web.netlify.app/v/{code}`. **Do not print real labels on it:** switch to the permanent domain first, because the domain is printed on the label and cannot change afterwards. | 6.1 |
-| 6 | **Batch code exports and print layouts** use the canonical code, grouped `XXXX-XXXX-XXXX`, with the printed code beside every QR. | 6.1 |
+| 6 | **Batch code exports and print layouts.** The CSV now has `code_display` and `verify_url`: show `code_display` in the export/print UI, and tell the printer to encode `verify_url` in the QR and print `code_display` beside it. If the frontend parses the CSV by column position, nothing moves (the new columns are last). | 6.1 |
 
-**Not built:** the backend does not generate QR images; the label printer or vendor builds the QR from the exported code or URL. Decision deferred (2026-11-20): whether to add a server-side QR or CSV export for batches; for now the printer builds the QR.
+**Not built:** the backend does not generate QR images (option A): the label printer or vendor builds the QR from the `verify_url` column. Decision deferred (2026-11-20): whether to add a server-side QR or CSV export for batches; for now the printer builds the QR.
 
 ### Not built (do not build against these)
 
@@ -413,7 +414,7 @@ function checkChar(payload: string): string {
 
 **Backend gaps.**
 - ~~`GET /01/{gtin}/21/{serial}` redirected to the JSON endpoint.~~ **Fixed:** it now redirects to `{VERIFY_BASE_URL}/v/{code}` (the consumer page), with the code normalised. `VERIFY_BASE_URL` is a setting that defaults to `FRONTEND_URL`; it is set to the temporary test domain `https://authenticheck-web.netlify.app` for now; change it to the permanent domain before real labels are printed.
-- The backend does not generate QR images. Batch code exports must give the printer the canonical code (and optionally the full URL) so the label vendor builds the QR.
+- The backend does not generate QR images. **Done (option A):** the batch code export carries `verify_url` and `code_display`, so the label vendor builds the QR from the URL. Server-side QR images (option B) are deferred.
 
 | ID | Requirement | Priority | Status |
 |---|---|---|---|

@@ -10,6 +10,9 @@ case-sensitive token that a converted code used to have, exact match only).
 """
 import re
 import secrets
+from urllib.parse import quote
+
+from django.conf import settings
 
 # Consumer code format: 12 characters = 11 random + 1 check character.
 # Alphabet drops look-alikes (0 O 1 I L) and U: digits 2-9 + 22 letters = 30 symbols.
@@ -76,3 +79,15 @@ def is_valid_format(raw: str) -> bool:
     if len(code) != CODE_LENGTH or any(ch not in _INDEX for ch in code):
         return False
     return _check_char(code[:-1]) == code[-1]
+
+
+def display_code(code: str) -> str:
+    """Human-readable grouping `XXXX-XXXX-XXXX` for a 12-character code; other values (old converted codes) are returned unchanged."""
+    if len(code) != CODE_LENGTH:
+        return code
+    return "-".join(code[i : i + 4] for i in range(0, CODE_LENGTH, 4))
+
+
+def verify_url(code: str) -> str:
+    """The consumer verify URL encoded in a QR code: `{VERIFY_BASE_URL}/v/{code}` (canonical code, no dashes)."""
+    return f"{settings.VERIFY_BASE_URL.rstrip('/')}/v/{quote(code, safe='')}"

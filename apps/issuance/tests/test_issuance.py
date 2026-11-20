@@ -1,5 +1,8 @@
 """Tests for Phase 3 – Issuance and export."""
 
+import csv
+import io
+
 import pytest
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
@@ -224,8 +227,26 @@ def test_export_streams_csv(client, done_job):
 
     content = b"".join(response.streaming_content).decode()
     lines = [l for l in content.splitlines() if l]
-    assert lines[0] == "code,batch_number,product_sku,product_name,issued_at"
+    assert lines[0] == "code,batch_number,product_sku,product_name,issued_at,code_display,verify_url"
     assert len(lines) == 6  # header + 5 codes
+
+
+def test_export_includes_display_code_and_verify_url(client, done_job, settings):
+    settings.VERIFY_BASE_URL = "https://verify.example.com/"
+    response = client.get(f"/api/v1/issuance/jobs/{done_job.pk}/export")
+    rows = list(csv.DictReader(io.StringIO(b"".join(response.streaming_content).decode())))
+    row = next(r for r in rows if r["code"] == "testcode0000")
+    assert row["code_display"] == "test-code-0000"
+    assert row["verify_url"] == "https://verify.example.com/v/testcode0000"
+
+
+def test_display_code_and_verify_url_helpers(settings):
+    from apps.issuance.codes import display_code, verify_url
+
+    settings.VERIFY_BASE_URL = "https://verify.example.com"
+    assert display_code("7KQ2M9XW4PRT") == "7KQ2-M9XW-4PRT"
+    assert display_code("A" * 22) == "A" * 22  # old converted code: unchanged
+    assert verify_url("7KQ2M9XW4PRT") == "https://verify.example.com/v/7KQ2M9XW4PRT"
 
 
 def test_export_unavailable_for_pending_job(client, owner, tenant, batch):
