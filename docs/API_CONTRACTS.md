@@ -1057,7 +1057,7 @@ Paginated audit log across all tenants.
 
 ### `GET /01/{gtin}/21/{serial}`
 
-GS1 Digital Link resolver. Redirects (`302`) to `/verify/{serial}`.
+GS1 Digital Link resolver. Redirects (`302`) to the consumer page `{VERIFY_BASE_URL}/v/{code}`; `serial` is the 12-character code and is normalised (upper-case, no spaces or dashes) first.
 
 **Path parameters**: `gtin` — 14-digit GTIN; `serial` — code string from label.
 

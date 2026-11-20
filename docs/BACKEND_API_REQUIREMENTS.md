@@ -3,7 +3,7 @@
 One living list of everything the frontend needs from the backend that `ENDPOINT_REFERENCE.md` does not yet give it, grouped by area. It is meant to be **kept and edited**, not rewritten each time.
 
 - Last reviewed against `ENDPOINT_REFERENCE.md`: **2026-10-30**
-- **Frontend: start with "Backend changes to adopt (2026-11-16)" below, a checklist of everything that changed.**
+- **Frontend: start with "Backend changes to adopt (2026-11-16)" below, a checklist of everything that changed, then "Backend changes to adopt (2026-11-20)" for the 12-character codes, QR and GS1 work.**
 - Frontend: see also "staff sign-in with MFA is now available (2026-11-16)".
 - Section 6 (public verification) updated **2026-11-05** after reading the backend source (`apps/issuance/tasks.py`, `apps/verification/views.py`): see 6.1 and 6.2.
 - Frontend state at that date: **Products tab built** against the endpoints below. Batches & codes and Investigations are still on sample data; their detailed specs stay in their own docs and are indexed in [section 5](#5-batches--codes) and [section 8](#8-investigations).
@@ -32,6 +32,33 @@ Everything below is **implemented, tested and on `main`**. Run `python manage.py
 | 14 | **Issuing codes is stricter.** `POST /issuance/jobs` (and resume) returns `409 over_issuance` (`details { declared_quantity, already_requested, remaining }`) when the batch's total requested codes would exceed its declared quantity, plus `409 product_suspended` and `409 product_archived`. `GET /issuance/codes?q=` ignores dashes, spaces and case. | Show the `over_issuance` message and offer "Raise declared quantity" (`PATCH` the batch), then retry. Show the suspended and archived messages. | **Yes**, for issuing beyond the declared quantity |
 | 15 | **CORS now allows `Idempotency-Key`** (and exposes `Retry-After`), so issuing codes works from the browser. `evidence` rows carry `checked`; `/platform/ops` also returns `verify`, `scans_24h` and `tls { expires_at, days_remaining }`. | None, once the API is redeployed. | No |
 
+
+## Backend changes to adopt (2026-11-20): 12-character codes, QR and GS1
+
+**Implemented, tested and on `main`.** Run `python manage.py migrate` first (it converts existing codes). Details: [section 6.1](#61-product-code-format-blocker).
+
+**Done on the backend**
+
+| Change | Where |
+|---|---|
+| New codes are **12 characters** from a 30-symbol alphabet (`23456789ABCDEFGHJKMNPQRSTVWXYZ`) with a Luhn mod-30 check as the 12th character, generated with `secrets.choice`. Stored and returned canonical (upper-case, no dashes). | `apps/issuance/codes.py` |
+| Codes issued before the change were converted; the old 22-character value still resolves through `legacy_code` (exact, case-sensitive match). | migration |
+| One normalising helper (trim, upper-case, strip spaces and dashes) is used by verify, reports, deactivate, USSD and GS1. | VER-10, VER-12 |
+| `GET /verify/{code}` returns `400 invalid_code_format` for input that cannot be a code, and does **not** record a scan. | VER-14 |
+| **GS1 Digital Link** `GET /01/{gtin}/21/{serial}` now redirects (`302`) to the consumer page `{VERIFY_BASE_URL}/v/{code}` (code normalised) instead of the JSON endpoint. New setting `VERIFY_BASE_URL`, default `FRONTEND_URL`. | `apps/integrations/views.py` |
+
+**Needed from the frontend**
+
+| # | Action | Detail |
+|---|---|---|
+| 1 | **Update `lib/api/verify.ts`** to the new format: `CODE_LENGTH = 12`, the alphabet, `cleanCode()` (trim, remove spaces and `-`, upper-case, never substitute `0/O` or `1/I/L`) and `validateCode()` including the check character (sample in 6.1). Group codes as `XXXX-XXXX-XXXX` for display. | VER-8 to VER-11 |
+| 2 | **Handle `400 invalid_code_format`** from `GET /verify/{code}` (show "That code isn't valid, check and try again"; nothing was recorded). | VER-14 |
+| 3 | **Add the consumer route `/v/[code]`** that runs the check for that code. This is the path the QR codes and the GS1 redirect point to. Tell the backend if the route is named differently and the redirect and docs will follow. | QR payload, 6.1 |
+| 4 | **Build "Scan QR"** with the browser camera. Accept only a URL on the verify domain (`/v/{code}` or `/01/{gtin}/21/{code}`) or a bare 12-character code; anything else is rejected without a lookup. Keep the typed-code input beside it as the fallback. | 6.1 |
+| 5 | **Decide the verify domain** (with the product owner) and give it to the backend as `VERIFY_BASE_URL`. It is printed on labels, so it must not change later. | 6.1 |
+| 6 | **Batch code exports and print layouts** use the canonical code, grouped `XXXX-XXXX-XXXX`, with the printed code beside every QR. | 6.1 |
+
+**Not built:** the backend does not generate QR images; the label printer or vendor builds the QR from the exported code or URL. Open decision: whether to add a server-side QR or CSV export for batches.
 
 ### Not built (do not build against these)
 
@@ -411,7 +438,7 @@ The design has these consumer states: first check, checked before, withdrawn, de
 | VER-19 | **Field names to confirm.** The frontend reads: `manufacturer.name`; `product.{name, brand, variant_size, industry}`; `batch.{batch_number, manufacture_date, expiry}`; `product_image.url`; `support_contact.{email, phone, url}`. Regulatory data is returned as a **list** `regulatory_refs[{country_code, reference_number, valid_until, verification_status}]`, while VER-3 describes a single object with `authority`; please reconcile (the frontend can read the list, but needs the authority name, e.g. "NAFDAC", for the label). `product.industry` is needed to show the "speak to a pharmacist" note. | **Required** | Confirm |
 | VER-20 | **No caching, and abuse limits.** Every `GET /verify/{code}` records a scan, so responses must carry `Cache-Control: no-store`. Rate-limit the public endpoint per IP and return `429` with `Retry-After`; the frontend shows its "can't check right now" state for `429` and `5xx`. | Optional | Open |
 
-Frontend side of VER-8 to VER-14: once the alphabet is fixed, the constants and validator in `lib/api/verify.ts` change in one place.
+Frontend side of VER-8 to VER-14: the alphabet is fixed, so the constants and validator in `lib/api/verify.ts` change in one place. The full frontend checklist is in "Backend changes to adopt (2026-11-20)" at the top.
 
 ---
 

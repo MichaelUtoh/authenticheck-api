@@ -322,7 +322,7 @@ are not yet approved, or are suspended by staff, return `404 not_found`.
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/01/{gtin}/21/{serial}` | 🌐 | GS1 Digital Link — redirects (`302`) to `/verify/{serial}` |
+| `GET` | `/01/{gtin}/21/{serial}` | 🌐 | GS1 Digital Link — redirects (`302`) to the consumer page `{VERIFY_BASE_URL}/v/{code}` |
 | `POST` | `/integrations/africastalking/ussd` | 🌐 | Africa's Talking USSD inbound (validated by AT API key) |
 
 ---
